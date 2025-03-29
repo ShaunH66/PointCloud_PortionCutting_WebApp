@@ -1,0 +1,11 @@
+streamlit>=1.18.0 # Core framework (ensure version supports toggle disable/enable if using that feature)
+numpy>=1.20.0    # Numerical operations
+pandas>=1.3.0    # Data handling (DataFrames)
+plotly>=5.5.0    # Interactive plotting (3D and 2D)
+scipy>=1.7.0     # Scientific computing (used for ConvexHull)
+
+# Optional, but needed for .pcd file support and downsampling:
+open3d>=0.14.0   # 3D data processing library (recommend 0.14 or later)
+
+# Note: openpyxl might be implicitly needed by pandas if you ever add Excel export
+# openpyxl>=3.0.0
