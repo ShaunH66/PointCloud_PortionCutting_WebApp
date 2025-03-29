@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Cheese Loaf Portion Calculator (Streamlit App)
 # Created - Shaun Harris
-# Version: 2.6 (Features: File Uploads (CSV/XYZ/PCD), Test Data Gen,
+# Version: 2.6 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
 #                 Volume Modes (Hull, Flat Bottom, Top-Down), Reverse Calc,
 #                 Waste First, Interpolation Toggle, Kerf, Tolerance, Trims,
 #                 Downsampling, Plotting (3D + 2D Profiles))
@@ -17,6 +17,7 @@ import sys    # For float info
 import time   # For basic timing
 import tempfile # For temporary file handling with open3d
 import os       # For temporary file handling
+import openpyxl # for .xlsx/.xls support
 
 # --- Optional: Import open3d with error handling ---
 _open3d_installed = False
@@ -124,19 +125,45 @@ def load_point_cloud(uploaded_file):
                 df = pd.read_csv(uploaded_file, header=None, delim_whitespace=True, names=['x', 'y', 'z'], on_bad_lines='warn', usecols=[0,1,2])
         elif file_ext == 'xyz':
             df = pd.read_csv(uploaded_file, header=None, delim_whitespace=True, names=['x', 'y', 'z'], on_bad_lines='warn', usecols=[0,1,2])
-        elif file_ext == 'pcd':
+        elif file_ext in ['pcd', 'ply']: # --- Handle PCD and PLY ---
             if not _open3d_installed:
-                st.error("`.pcd` requires `open3d`. Install: `pip install open3d`")
+                st.error(f"`.{file_ext}` requires `open3d`. Install: `pip install open3d`")
                 return None
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pcd") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as tmp:
                 temp_path = tmp.name; tmp.write(uploaded_file.getvalue())
+            # Read using open3d
             pcd = o3d.io.read_point_cloud(temp_path)
-            if not pcd.has_points(): st.error("PCD file empty or unreadable."); return None
+            if not pcd.has_points(): st.error(f"{file_ext.upper()} file empty or unreadable."); return None
             points = np.asarray(pcd.points)
-            if points.shape[1] != 3: st.error(f"PCD has {points.shape[1]} dims, expected 3."); return None
+            if points.shape[1] != 3: st.error(f"{file_ext.upper()} has {points.shape[1]} dims, expected 3."); return None
             df = pd.DataFrame(points, columns=['x', 'y', 'z'])
+        elif file_ext in ['xlsx', 'xls']: # --- Handle Excel ---
+            try:
+                # Read the first sheet by default
+                # engine='openpyxl' is needed for xlsx, pandas selects automatically for xls
+                df_excel = pd.read_excel(uploaded_file, sheet_name=0, engine='openpyxl' if file_ext == 'xlsx' else None)
+                df_excel.columns = [str(c).lower() for c in df_excel.columns] # Ensure string columns, lower case
+                if {'x', 'y', 'z'}.issubset(df_excel.columns):
+                    df = df_excel[['x', 'y', 'z']].copy() # Select necessary columns
+                else:
+                    # Fallback: Assume first 3 columns are X, Y, Z if names don't match
+                    if df_excel.shape[1] >= 3:
+                        st.warning("Columns 'x', 'y', 'z' not found in Excel file. Assuming first 3 columns are X, Y, Z.")
+                        df = df_excel.iloc[:, 0:3].copy()
+                        df.columns = ['x', 'y', 'z']
+                    else:
+                        raise ValueError("Could not find 'x', 'y', 'z' columns or enough columns in Excel file.")
+            except ImportError:
+                st.error("Reading Excel files requires the `openpyxl` library. Install: `pip install openpyxl`")
+                return None
+            except Exception as excel_error:
+                st.error(f"Error reading Excel file: {excel_error}")
+                return None
         else:
-            st.error(f"Unsupported format: .{file_ext}. Use CSV, XYZ, PCD.")
+            supported_formats = "CSV, XYZ"
+            if _open3d_installed: supported_formats += ", PCD, PLY"
+            supported_formats += ", XLSX, XLS"
+            st.error(f"Unsupported format: .{file_ext}. Use {supported_formats}.")
             return None
 
         # --- Common Post-Processing ---
@@ -509,13 +536,18 @@ with st.sidebar:
     data_source = st.radio("Point Cloud Source:", ("Generate Test Data", "Upload File"), index=0, key="data_source")
     uploaded_file = None
     file_types = ['csv', 'xyz']
-    if _open3d_installed: file_types.append('pcd')
+    if _open3d_installed: file_types.extend(['pcd', 'ply'])
+    file_types.extend(['xlsx', 'xls']) 
+
     if st.session_state.data_source == "Upload File":
-        uploaded_file = st.file_uploader(f"Choose a .{', .'.join(file_types)} file", type=file_types, key="uploader")
-        if 'pcd' in file_types and not _open3d_installed:
-             st.warning("Install `open3d` to load `.pcd` files.")
-        elif 'pcd' in file_types:
-             st.caption("`.pcd` requires `open3d` library.")
+        uploaded_file = st.sidebar.file_uploader(
+            f"Choose a .{', .'.join(file_types)} file",
+            type=file_types,
+            key="uploader"
+        )
+        if ('pcd' in file_types or 'ply' in file_types) and not _open3d_installed:
+            st.sidebar.warning("Install `open3d` to load `.pcd`/`.ply` files.")
+        st.sidebar.caption("Excel files (.xlsx/.xls) should have columns named 'x', 'y', 'z' (case-insensitive) on the first sheet.")
     else: st.markdown("_(Using generated test data)_")
 
     st.number_input("Total Loaf Weight (g)", min_value=0.01, value=float(DEFAULT_TOTAL_WEIGHT), step=50.0, format="%.2f", key="total_weight")
