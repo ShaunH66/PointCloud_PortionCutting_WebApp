@@ -1,5 +1,6 @@
 # -----------------------------------------------------------------------------
 # Cheese Loaf Portion Calculator (Streamlit App)
+# Created - Shaun Harris
 # Version: 2.6 (Features: File Uploads (CSV/XYZ/PCD), Test Data Gen,
 #                 Volume Modes (Hull, Flat Bottom, Top-Down), Reverse Calc,
 #                 Waste First, Interpolation Toggle, Kerf, Tolerance, Trims,
