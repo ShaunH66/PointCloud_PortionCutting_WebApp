@@ -458,7 +458,7 @@ with st.sidebar: # Sidebar UI
     calc_button_main_ui = st.button("Calculate Portions", type="primary", use_container_width=True)
     st.caption("P1 is first physical piece (waste).\nClick 'Calculate Portions'.")
 
-st.title(f"🔪 Cheese Loaf Portion Calculator (v1.3.9)")
+st.title(f"🔪 Cheese Loaf Point Cloud Portion Calculator - By Shaun Harris")
 st.markdown("Calculates cuts. **Portion 1** is the first physical piece (waste).")
 
 refresh_data_flag_main_ui = False 
