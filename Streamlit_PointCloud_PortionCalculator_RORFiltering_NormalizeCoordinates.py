@@ -211,7 +211,6 @@ def estimate_slice_volume_convex_hull_numpy(
     slice_length = max(0.0, y_e - y_s)
     volume = area * slice_length
     return volume if (np.isfinite(volume) and volume >=0) else 0.0
-# --- END OF MODIFIED FUNCTION ---
 
 def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y):
     act_vol = 0.0
@@ -352,7 +351,7 @@ def calculate_cut_portions_reversed(
     finally:
         tot_calc_t = time.time() - calc_t_start
         final_stat = f"{stat_msg} Total Time: {tot_calc_t:.2f}s (Profile: {vp_time:.2f}s, Cutting: {cut_time:.2f}s)"
-        prog_txt_area.text(final_stat);
+        prog_txt_area.text(final_stat)
         if '_pb_area' in locals() and _pb_area is not None: _pb_area.empty()
         res["portions"]=out_portions; res["status"]=stat_msg; res["calc_time"]=tot_calc_t
     return res
