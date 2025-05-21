@@ -277,7 +277,7 @@ def calculate_cut_portions_reversed(
                 eff_fb_vp, top_down
             )
             if sl_vol > 0: vp_prof[y_s_loop] = sl_vol; tot_vol += sl_vol
-            _prog_val = (i+1)/n_steps;
+            _prog_val = (i+1)/n_steps
             if _prog_val <=1.0: _pb.progress(_prog_val)
        
         vp_time = time.time() - _vp_start_t
