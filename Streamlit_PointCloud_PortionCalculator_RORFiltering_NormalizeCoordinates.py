@@ -240,7 +240,7 @@ def calculate_cut_portions_reversed( # Same as v1.4.9
             if tot_vol <= FLOAT_EPSILON*100: raise ValueError(f"Est. total volume ({tot_vol:.2e}mm³) is near zero.")
             if total_w <= FLOAT_EPSILON: raise ValueError("Total weight must be >0 to calculate density.")
             dens = total_w / tot_vol
-            res["density_source_message"] = f"Calculated density: {dens * 1000:.3f} g/cm³ (from Total Wt: {total_w:.2f}g / Est. Vol: {tot_vol/1000:.1f}cm³)."
+            res["density_source_message"] = f"Calculated density: {dens * 1000:.3f} g/cm³ (from Total Wt: {total_w:.2f}g / Est. Vol: {tot_vol/1000:.1f}cm³). Compute time: {vp_time:.2f}s."
         if not (np.isfinite(dens) and dens > 0): raise ValueError(f"Density invalid ({dens=}).")
         res["total_volume"] = tot_vol; res["density"] = dens
         sorted_y_s_arr = np.array(sorted(vp_prof.keys()))
@@ -537,6 +537,33 @@ with st.sidebar:
         if not _open3d_installed and any(ft in ['pcd','ply'] for ft in file_types_sb_main): st.caption("Install `open3d` for .pcd/.ply.")
         st.caption("Excel: 'x','y','z' cols on 1st sheet.")
     else: st.caption("_(Using generated test data)_")
+
+    
+    if st.session_state.point_cloud_data is not None and not st.session_state.point_cloud_data.empty and _open3d_installed and st.session_state.data_source == "Upload File" and uploaded_file_sb is not None:
+        st.subheader("Convert & Download Current Cloud")
+        
+        # Convert to PLY
+        if st.button("Download as Binary PLY"):
+            with st.spinner("Preparing Binary PLY download..."):
+                try:
+                    o3d_pcd_to_save = o3d.geometry.PointCloud()
+                    o3d_pcd_to_save.points = o3d.utility.Vector3dVector(st.session_state.point_cloud_data[['x','y','z']].values)
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".ply") as tmp_ply:
+                        o3d.io.write_point_cloud(tmp_ply.name, o3d_pcd_to_save, write_ascii=False)
+                        tmp_ply_path = tmp_ply.name
+                    
+                    with open(tmp_ply_path, "rb") as fp:
+                        st.download_button(
+                            label="Click to Download Binary PLY",
+                            data=fp,
+                            file_name="converted_cloud.ply",
+                            mime="application/octet-stream" # A generic binary stream type
+                        )
+                    if os.path.exists(tmp_ply_path): os.remove(tmp_ply_path)
+                except Exception as e_ply_save:
+                    st.error(f"Error creating PLY: {e_ply_save}")
+
     st.subheader("2. Weight & Density Settings")
     st.radio("Density Source:", options=["Calculate from Total Weight & Volume", "Input Directly"], key="density_source", horizontal=True) 
     if st.session_state.density_source == "Calculate from Total Weight & Volume":
@@ -774,7 +801,7 @@ if points_df_disp_ui is not None and not points_df_disp_ui.empty:
     except Exception as e_met_ui: st.warning(f"Dimension display error: {e_met_ui}")
 
     st.markdown("---")
-    st.subheader("🎬 Interactive 3D Inspection (External Open3D Window)")
+    st.subheader("🎬 Interactive 3D Inspection (External Open3D Window. Needs To Be Ran Locally)")
     st.caption("Launches a new window with Open3D for animated inspection. Close the Open3D window to return to the app.")
     
     if st.button("🚁 Fly Around Loaf (Open3D)", key="o3d_fly_around_btn", use_container_width=True, disabled=not _open3d_installed):
