@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
-# Cheese Loaf Portion Calculator (Streamlit App)
+# Point Cloud Portion Calculator (Streamlit App)
 # Created - Shaun Harris
-# Version: 1.4.11 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
+# Version: 1.4.12 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
 #                 Volume Modes (Hull, Flat Bottom, Top-Down), Reverse Calc,
 #                 Waste First, Interpolation Toggle, Kerf, Tolerance, Trims,
 #                 Voxel Downsampling, Optional Auto-Downsampling (Random) with User Threshold,
@@ -9,7 +9,7 @@
 #                 Optimized XYZ loading, UI Fixes, Improved loading feedback,
 #                 Decoupled data refresh, Optional Y-Normalization before calculation,
 #                 Direct Density Input, Open3D Fly Around, Open3D Static Cuts View,
-#                 Reset Button, Help Section)
+#                 Reset Button, Help Section, NumPy Optimized Volume Profiling)
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -30,7 +30,7 @@ try:
     import open3d as o3d
     _open3d_installed = True
 except ImportError:
-    pass 
+    pass
 # --- End Optional ---
 
 # --- Constants and Configuration ---
@@ -42,16 +42,15 @@ MIN_POINTS_FOR_HULL = 10; FLOAT_EPSILON = sys.float_info.epsilon
 DISPLAY_PRECISION = 2; DEFAULT_BLADE_THICKNESS = 0.0
 DEFAULT_VOXEL_SIZE = 0.0; DEFAULT_WEIGHT_TOLERANCE = 0.0
 DEFAULT_START_TRIM = 0.0; DEFAULT_END_TRIM = 0.0
-# MAX_POINTS_AUTO_DOWNSAMPLE = 350000 # Now managed by session state
 DEFAULT_DIRECT_DENSITY_G_CM3 = 1.05 # g/cm^3
 DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD = 350000
 
 
 # --- Point Cloud Generation ---
-def generate_test_point_cloud( 
+def generate_test_point_cloud(
     base_length=NOMINAL_LENGTH, base_width=NOMINAL_WIDTH, base_height=NOMINAL_HEIGHT,
     resolution=DEFAULT_RESOLUTION, noise_factor=0.03, waviness_factor = 0.05, seed=None
-): # Same as v1.4.9
+):
     if seed is not None: np.random.seed(seed)
     length = base_length*(1+np.random.uniform(-0.05,0.05)); width=base_width*(1+np.random.uniform(-0.05,0.05)); height=base_height*(1+np.random.uniform(-0.05,0.05))
     num_pts_factor=1.0/(resolution**2); total_surf_area=2*(width*length+height*length+width*height)
@@ -72,12 +71,12 @@ def generate_test_point_cloud(
         if np.any(s_mask): pts_arr[s_mask,0]+=x_wave[s_mask]*0.5; pts_arr[s_mask,2]+=z_wave[s_mask]
         pts_arr+=np.random.normal(0,resolution*2,pts_arr.shape)
         pts_arr[:,0]=np.clip(pts_arr[:,0],-width*0.1,width*1.1); pts_arr[:,1]=np.clip(pts_arr[:,1],-length*0.1,length*1.1); pts_arr[:,2]=np.clip(pts_arr[:,2],-height*0.1,height*1.1)
-        if pts_arr.shape[0]>0: pts_arr[:,1]-=np.min(pts_arr[:,1]) 
+        if pts_arr.shape[0]>0: pts_arr[:,1]-=np.min(pts_arr[:,1])
     else: return pd.DataFrame(columns=['x','y','z'])
     return pd.DataFrame(pts_arr,columns=['x','y','z'])
 
 # --- Point Cloud Loading ---
-def load_point_cloud(uploaded_file): # Same as v1.4.9
+def load_point_cloud(uploaded_file):
     if uploaded_file is None: return None
     temp_path = None; df = None
     try:
@@ -135,7 +134,7 @@ def load_point_cloud(uploaded_file): # Same as v1.4.9
         if df.empty: st.error("No valid numeric X,Y,Z data found in file."); return None
         if o3d_xyz_success_flag_local: st.toast(f"Loaded {len(df)} pts from {uploaded_file.name} via Open3D.", icon="🚀")
         elif file_ext != 'xyz': st.toast(f"Loaded {len(df)} pts from {uploaded_file.name}.", icon="✅")
-        elif df is not None : st.toast(f"Loaded {len(df)} pts from {uploaded_file.name} using Pandas.", icon="✅") 
+        elif df is not None : st.toast(f"Loaded {len(df)} pts from {uploaded_file.name} using Pandas.", icon="✅")
         return df
     except Exception as e: st.error(f"Load error '{uploaded_file.name}': {e}"); return None
     finally:
@@ -143,7 +142,7 @@ def load_point_cloud(uploaded_file): # Same as v1.4.9
             try: os.unlink(temp_path)
             except Exception as cl_err: st.warning(f"Temp file cleanup error: {cl_err}")
 
-def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult): # Same as v1.4.9
+def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult):
     if o3d_pcd is None or not o3d_pcd.has_points(): return None, "Cloud empty for ROR est."
     n_pts = len(o3d_pcd.points);
     if n_pts < k_neighbors + 1: return None, f"Not enough pts ({n_pts}) for k={k_neighbors}."
@@ -158,29 +157,63 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult): # Same as v1.4.9
         return est_rad, f"Avg k-NN dist ({samples} samples, k={k_neighbors}): {avg_dist:.4f}mm. Suggested Radius (x{mult:.2f}): {est_rad:.4f}mm"
     except Exception as e: return None, f"ROR radius est. error: {e}"
 
-def estimate_slice_volume_convex_hull(df_pts, y_s, y_e, flat_bottom, top_down): # Same as v1.4.9
-    if y_e <= y_s + FLOAT_EPSILON: return 0.0
-    sl_pts = df_pts[(df_pts['y'] >= y_s) & (df_pts['y'] < y_e)]
-    n_sl_pts = len(sl_pts); area = 0.0
+# --- MODIFIED FOR NUMPY OPTIMIZATION ---
+def estimate_slice_volume_convex_hull_numpy(
+    y_coords_np, x_coords_np, z_coords_np,
+    y_s, y_e,
+    flat_bottom, top_down
+):
+    if y_e <= y_s + FLOAT_EPSILON:
+        return 0.0
+
+    start_idx = np.searchsorted(y_coords_np, y_s, side='left')
+    end_idx = np.searchsorted(y_coords_np, y_e, side='left')
+
+    if start_idx >= end_idx:
+        return 0.0
+
+    slice_x_np = x_coords_np[start_idx:end_idx]
+    slice_z_np = z_coords_np[start_idx:end_idx]
+
+    n_sl_pts = len(slice_x_np)
+    area = 0.0
+
     if top_down:
-        if n_sl_pts >= 2: w = sl_pts['x'].max()-sl_pts['x'].min(); h_z = sl_pts['z'].mean();
-        if np.isfinite(w) and np.isfinite(h_z) and w>=0 and h_z>=0: area = w * h_z
+        if n_sl_pts >= 2:
+            w = slice_x_np.max() - slice_x_np.min()
+            h_z = np.mean(slice_z_np)
+            if np.isfinite(w) and np.isfinite(h_z) and w >= 0 and h_z >= 0:
+                area = w * h_z
     else:
         if n_sl_pts >= 2:
-            sl_min_x,sl_max_x=sl_pts['x'].min(),sl_pts['x'].max(); sl_min_z,sl_max_z=sl_pts['z'].min(),sl_pts['z'].max()
-            eff_min_z_hull = 0.0 if flat_bottom else sl_min_z
-            if n_sl_pts >= MIN_POINTS_FOR_HULL and (sl_max_x-sl_min_x > FLOAT_EPSILON*10) and (sl_max_z-eff_min_z_hull > FLOAT_EPSILON*10):
-                try:
-                    hull_pts=sl_pts[['x','z']].values
-                    if flat_bottom: hull_pts=np.vstack((hull_pts,[[sl_min_x,0.0],[sl_max_x,0.0]]))
-                    hull=ConvexHull(hull_pts); area=hull.volume
-                    if not (np.isfinite(area) and area >=0): area = 0.0
-                except (QhullError,ValueError,Exception): area = 0.0
-            if area <= FLOAT_EPSILON: area=max(0.0,sl_max_x-sl_min_x)*max(0.0,sl_max_z-eff_min_z_hull)
-            if not (np.isfinite(area) and area >=0): area = 0.0
-    return area * max(0.0, y_e - y_s) if (np.isfinite(area) and area >=0) else 0.0
+            sl_min_x, sl_max_x = slice_x_np.min(), slice_x_np.max()
+            sl_min_z_actual, sl_max_z_actual = slice_z_np.min(), slice_z_np.max()
+            eff_min_z_for_area_calc = 0.0 if flat_bottom else sl_min_z_actual
+            width_for_area = sl_max_x - sl_min_x
+            height_for_area = sl_max_z_actual - eff_min_z_for_area_calc
 
-def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y): # Same as v1.4.9
+            if n_sl_pts >= MIN_POINTS_FOR_HULL and \
+               width_for_area > FLOAT_EPSILON * 10 and \
+               height_for_area > FLOAT_EPSILON * 10:
+                try:
+                    hull_pts_np = np.column_stack((slice_x_np, slice_z_np))
+                    if flat_bottom:
+                        hull_pts_np = np.vstack((hull_pts_np,
+                                                 [[sl_min_x, 0.0], [sl_max_x, 0.0]]))
+                    hull = ConvexHull(hull_pts_np)
+                    area = hull.volume
+                    if not (np.isfinite(area) and area >= 0): area = 0.0
+                except (QhullError, ValueError, Exception): area = 0.0
+            if area <= FLOAT_EPSILON:
+                area = max(0.0, width_for_area) * max(0.0, height_for_area)
+            if not (np.isfinite(area) and area >= 0): area = 0.0
+
+    slice_length = max(0.0, y_e - y_s)
+    volume = area * slice_length
+    return volume if (np.isfinite(volume) and volume >=0) else 0.0
+# --- END OF MODIFIED FUNCTION ---
+
+def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y):
     act_vol = 0.0
     if p_max_y <= p_min_y + FLOAT_EPSILON: return 0.0
     s_idx = np.searchsorted(sorted_y_s, p_min_y - slice_inc, side='left')
@@ -200,7 +233,8 @@ def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y
                 else: return np.nan
     return act_vol
 
-def calculate_cut_portions_reversed( # Same as v1.4.9
+# --- MODIFIED FOR NUMPY OPTIMIZATION ---
+def calculate_cut_portions_reversed(
     points_df, total_w, target_w, slice_inc, no_interp, flat_bottom, top_down,
     blade_thick, w_tol, start_trim, end_trim, direct_density_g_mm3=None ):
     calc_t_start = time.time(); tmp_portions=[]; out_portions=[]
@@ -217,20 +251,35 @@ def calculate_cut_portions_reversed( # Same as v1.4.9
     calc_sy_eff = loaf_min_y_orig_calc + start_trim; calc_ey_eff = loaf_max_y_orig_calc - end_trim
     res["calc_start_y"] = calc_sy_eff; res["calc_end_y"] = calc_ey_eff
     if calc_sy_eff >= calc_ey_eff - FLOAT_EPSILON: res["status"]=f"Err: Trims overlap (Eff. length: {calc_ey_eff-calc_sy_eff:.2f}mm)."; return res
+
     try:
         _vp_start_t = time.time()
+        prog_txt_area.text("Preparing point cloud (sorting by Y)...")
+        points_df_sorted = points_df.sort_values(by='y', kind='mergesort', ignore_index=True)
+        y_coords_np = points_df_sorted['y'].to_numpy(dtype=np.float64, copy=False) # copy=False if df_sorted is not used elsewhere for this
+        x_coords_np = points_df_sorted['x'].to_numpy(dtype=np.float64, copy=False)
+        z_coords_np = points_df_sorted['z'].to_numpy(dtype=np.float64, copy=False)
+        prog_txt_area.text("Point cloud prepared for profiling.")
+
         full_y_steps = np.arange(loaf_min_y_orig_calc, loaf_max_y_orig_calc, slice_inc)
         _pb_area = st.empty(); _pb = _pb_area.progress(0.0)
         n_steps = len(full_y_steps) if len(full_y_steps)>0 else 1
         eff_fb_vp = flat_bottom or top_down
+
         for i, y_s_loop in enumerate(full_y_steps):
             prog_txt_area.text(f"Vol profile... Slice {i+1}/{n_steps} (Y={y_s_loop:.1f}mm)")
             y_e_loop = min(y_s_loop + slice_inc, loaf_max_y_orig_calc)
             if y_s_loop >= loaf_max_y_orig_calc - FLOAT_EPSILON: break
-            sl_vol = estimate_slice_volume_convex_hull(points_df, y_s_loop, y_e_loop, eff_fb_vp, top_down)
+
+            sl_vol = estimate_slice_volume_convex_hull_numpy( # CALLING THE NUMPY VERSION
+                y_coords_np, x_coords_np, z_coords_np,
+                y_s_loop, y_e_loop,
+                eff_fb_vp, top_down
+            )
             if sl_vol > 0: vp_prof[y_s_loop] = sl_vol; tot_vol += sl_vol
             _prog_val = (i+1)/n_steps;
             if _prog_val <=1.0: _pb.progress(_prog_val)
+       
         vp_time = time.time() - _vp_start_t
         prog_txt_area.text(f"Vol profile done ({vp_time:.2f}s). Est. Total Vol: {tot_vol/1000:.1f} cm³.")
         if direct_density_g_mm3 is not None and direct_density_g_mm3 > FLOAT_EPSILON:
@@ -240,7 +289,7 @@ def calculate_cut_portions_reversed( # Same as v1.4.9
             if tot_vol <= FLOAT_EPSILON*100: raise ValueError(f"Est. total volume ({tot_vol:.2e}mm³) is near zero.")
             if total_w <= FLOAT_EPSILON: raise ValueError("Total weight must be >0 to calculate density.")
             dens = total_w / tot_vol
-            res["density_source_message"] = f"Calculated density: {dens * 1000:.3f} g/cm³ (from Total Wt: {total_w:.2f}g / Est. Vol: {tot_vol/1000:.1f}cm³). Compute time: {vp_time:.2f}s."
+            res["density_source_message"] = f"Calculated density: {dens * 1000:.3f} g/cm³ (from Total Wt: {total_w:.2f}g / Est. Vol: {tot_vol/1000:.1f}cm³). Compute Time: {vp_time:.2f}s"
         if not (np.isfinite(dens) and dens > 0): raise ValueError(f"Density invalid ({dens=}).")
         res["total_volume"] = tot_vol; res["density"] = dens
         sorted_y_s_arr = np.array(sorted(vp_prof.keys()))
@@ -299,7 +348,7 @@ def calculate_cut_portions_reversed( # Same as v1.4.9
         if out_portions: stat_msg += " (P1 is first physical piece/waste)."
     except OverflowError: stat_msg = "Err: Numerical overflow."
     except ValueError as ve: stat_msg = f"Err: {ve}"
-    except Exception as ex: stat_msg = f"Unexpected err: {ex}"; raise
+    except Exception as ex: stat_msg = f"Unexpected err: {ex}"
     finally:
         tot_calc_t = time.time() - calc_t_start
         final_stat = f"{stat_msg} Total Time: {tot_calc_t:.2f}s (Profile: {vp_time:.2f}s, Cutting: {cut_time:.2f}s)"
@@ -308,7 +357,7 @@ def calculate_cut_portions_reversed( # Same as v1.4.9
         res["portions"]=out_portions; res["status"]=stat_msg; res["calc_time"]=tot_calc_t
     return res
 
-def plot_3d_loaf(points_df, portions=None, title="Cheese Loaf Point Cloud", y_offset=0.0, camera_override=None): 
+def plot_3d_loaf(points_df, portions=None, title="Point Cloud", y_offset=0.0, camera_override=None): 
     if points_df is None or points_df.empty: return go.Figure()
     fig = go.Figure()
     fig.add_trace(go.Scatter3d(x=points_df['x'], y=points_df['y'], z=points_df['z'], mode='markers',
@@ -367,7 +416,6 @@ def plot_cumulative_weight(volume_profile, sorted_y_starts, density_g_mm3, porti
     fig.update_layout(title="Cumulative Weight Profile (Shaded=Trimmed)", xaxis_title="Length (Y, mm - Relative to Calc Start)", yaxis_title="Cumulative Weight (g)", yaxis_range=[0, max_weight_for_plot * 1.05], margin=dict(l=20,r=20,t=40,b=20), height=350)
     return fig
 
-# --- Open3D Animation Logic (REVISED for v1.4.10 - Fly Around) ---
 o3d_animation_globals = {
     "current_step": 0,
     "total_steps": 720,  
@@ -429,7 +477,6 @@ def start_o3d_visualization(points_df, animation_type_str):
         st.info("Open3D window closed.")
         reset_o3d_animation_globals()
 
-# --- Open3D Static Cuts Visualization (CORRECTED PLANE ORIENTATION for v1.4.10) ---
 def create_o3d_plane_mesh(y_pos, x_min, x_max, z_min, z_max, color, plane_thickness_along_y=1.0):
     if not _open3d_installed: return None
     plane_extent_x = x_max - x_min
@@ -501,7 +548,7 @@ def launch_o3d_viewer_with_cuts(points_df, portions_data,
     except Exception as e: st.error(f"Failed to launch Open3D window: {e}")
     finally: st.info("Open3D window closed.")
 
-st.set_page_config(layout="wide", page_title="Cheese Portion Calc v1.4.10", page_icon="🧀")
+st.set_page_config(layout="wide", page_title="Point Cloud Portion Calc v1.4.12", page_icon="🧀")
 
 default_persistent_states = { 
     'point_cloud_data': None, 'data_origin': None, 'last_file_id': None, 'calc_results': None,
@@ -514,7 +561,7 @@ default_persistent_states = {
     'top_down_scan': False, 'flat_bottom': False, 'voxel_size': DEFAULT_VOXEL_SIZE,
     'resolution': DEFAULT_RESOLUTION, 'ror_nb_points': 16, 'ror_radius_val': 0.1,
     'ror_k_radius_est': 10, 'ror_radius_mult_est': 2.0, 'enable_auto_downsample': True,
-    'auto_downsample_threshold': DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD, # ADDED
+    'auto_downsample_threshold': DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD,
     'enable_y_normalization': True,
     'y_min_of_displayed_cloud': 0.0,
     'density_source': "Calculate from Total Weight & Volume",
@@ -524,7 +571,7 @@ for key_init, value_init in default_persistent_states.items():
     if key_init not in st.session_state: st.session_state[key_init] = value_init
 
 with st.sidebar: 
-    st.header("🧀 Loaf Parameters")
+    st.header("🧀 Parameters")
     st.subheader("1. Data Source")
     data_source_options = ("Generate Test Data", "Upload File")
     try: default_ds_index = data_source_options.index(st.session_state.data_source)
@@ -542,7 +589,6 @@ with st.sidebar:
     if st.session_state.point_cloud_data is not None and not st.session_state.point_cloud_data.empty and _open3d_installed and st.session_state.data_source == "Upload File" and uploaded_file_sb is not None:
         st.subheader("Convert & Download Current Cloud")
         
-        # Convert to PLY
         if st.button("Download as Binary PLY"):
             with st.spinner("Preparing Binary PLY download..."):
                 try:
@@ -558,7 +604,7 @@ with st.sidebar:
                             label="Click to Download Binary PLY",
                             data=fp,
                             file_name="converted_cloud.ply",
-                            mime="application/octet-stream" # A generic binary stream type
+                            mime="application/octet-stream" 
                         )
                     if os.path.exists(tmp_ply_path): os.remove(tmp_ply_path)
                 except Exception as e_ply_save:
@@ -656,14 +702,13 @@ with st.sidebar:
         st.toast("All settings cleared. Defaults will apply on refresh. Point cloud will reload/regenerate.", icon="🧼")
         st.rerun()
 
-st.title(f"🔪 Cheese Loaf Point Cloud Portion Calculator")
+st.title(f"🔪 Point Cloud Cutting Portion Calculator")
 st.markdown("<p style='font-size:24px;'>Created By Shaun Harris</p>", unsafe_allow_html=True)
 st.markdown("Calculates cuts. **Portion 1** is the first physical piece (waste).")
 
 with st.expander("ℹ️ Help / App Information", expanded=False):
     st.markdown("""
-    ### Welcome to the Cheese Loaf Point Cloud Portion Calculator!
-    This application helps you calculate optimal cutting portions for cheese loaves based on 3D point cloud data.
+    This application helps you calculate optimal cutting portions based on 3D point cloud data.
     ---
     #### **How to Use:**
     **1. Sidebar Parameters:** The sidebar on the left contains all the input parameters.
@@ -696,7 +741,7 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     #### **Interpreting the Display:**
     *   **Point Cloud Input Metrics:** Shows current point count and estimated dimensions.
     *   **Interactive 3D Inspection (External Open3D Window):**
-        *   `Fly Around Loaf (Open3D)`: Opens a new window to orbit the point cloud (requires `open3d`).
+        *   `Fly Around Loaf (Open3D)`: Opens a new window to orbit the point cloud (requires `open3d`). This feature works best when running the script locally.
     *   **Current Point Cloud (Static Preview):** A static 3D plot. Calculated cuts are overlaid (red planes).
     ---
     #### **Portioning Results:**
@@ -704,7 +749,7 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     *   **Results Summary Tab:**
         *   `Calculated Portions Table`: Portion #1 is the first physical piece from the front. Highlights: Yellow (P1), Red (outside tolerance).
         *   `Download Results CSV`: Saves table data.
-        *   `View Cuts in 3D (Open3D)`: Shows cloud with trim planes (blue) and portion cuts (red) in a new window (requires `open3d`).
+        *   `View Cuts in 3D (Open3D)`: Shows cloud with trim planes (blue) and portion cuts (red) in a new window (requires `open3d`). This feature works best when running the script locally.
     *   `Metrics`: Target/Tolerance, P1 weight, Total Calculated Weight, Density/Volume used.
     *   **Analysis Plots Tab:**
         *   `Area Profile`: Estimated cross-sectional area along loaf length. Shaded regions = trims.
@@ -746,7 +791,7 @@ if refresh_data_flag_main_ui: # BLOCK 1
             if temp_df_load_main_ui is not None: st.toast(f"Generated {len(temp_df_load_main_ui):,} pts.", icon="✨")
             else: st.error("Failed to generate test data.")
     elif st.session_state.data_source == "Upload File" and uploaded_file_sb is not None:
-        if uploaded_file_sb.size > 5*1024*1024 and st.session_state.enable_auto_downsample : total_steps +=1 # This check may need adjustment based on where threshold is checked
+        if uploaded_file_sb.size > 5*1024*1024 and st.session_state.enable_auto_downsample : total_steps +=1 
         if st.session_state.voxel_size > 0: total_steps += 1
         current_step += 1; spinner_msg_load = f"Step {current_step}/{total_steps}: Reading {uploaded_file_sb.name}..."
         with st.spinner(spinner_msg_load): temp_df_load_main_ui = load_point_cloud(uploaded_file_sb)
@@ -773,7 +818,7 @@ if refresh_data_flag_main_ui: # BLOCK 1
     processed_df_session_ui = temp_df_load_main_ui
     if temp_df_load_main_ui is not None and not temp_df_load_main_ui.empty and st.session_state.voxel_size > 0:
         if _open3d_installed:
-            current_step +=1; spinner_msg_voxel = f"Step {current_step}/{total_steps}: Voxel Downsampling..." # This step logic might need review if auto-downsample also increments total_steps
+            current_step +=1; spinner_msg_voxel = f"Step {current_step}/{total_steps}: Voxel Downsampling..." 
             with st.spinner(spinner_msg_voxel):
                 pcd_vox_ui=o3d.geometry.PointCloud(); pcd_vox_ui.points=o3d.utility.Vector3dVector(temp_df_load_main_ui[['x','y','z']].values)
                 if not pcd_vox_ui.has_points(): st.warning("Cloud empty before voxel downsample.")
@@ -795,13 +840,13 @@ if points_df_disp_ui is not None and not points_df_disp_ui.empty:
         if np.all(np.isfinite(points_df_disp_ui[['x','y','z']].values)):
             min_dims_ui,max_dims_ui,dims_ui=points_df_disp_ui.min(),points_df_disp_ui.max(),points_df_disp_ui.max()-points_df_disp_ui.min()
             col1_met_ui.metric("Current Points", f"{len(points_df_disp_ui):,}")
-            col2_met_ui.metric("Loaf Length (Y)", f"{dims_ui.get('y', np.nan):.1f} mm")
-            col3_met_ui.metric("Est. Max Width (X)", f"{dims_ui.get('x', np.nan):.1f} mm")
+            col2_met_ui.metric("Loaf Length (Y)", f"{dims_ui.get('y', np.nan):.2f} mm")
+            col3_met_ui.metric("Est. Max Width (X)", f"{dims_ui.get('x', np.nan):.2f} mm")
         else: col1_met_ui.metric("Current Points",f"{len(points_df_disp_ui):,}"); col2_met_ui.warning("Non-finite data in cloud.")
     except Exception as e_met_ui: st.warning(f"Dimension display error: {e_met_ui}")
 
     st.markdown("---")
-    st.subheader("🎬 Interactive 3D Inspection (External Open3D Window. Needs To Be Ran Locally)")
+    st.subheader("🎬 Interactive 3D Inspection (External Open3D Window. Script Needs To Be Ran Locally)")
     st.caption("Launches a new window with Open3D for animated inspection. Close the Open3D window to return to the app.")
     
     if st.button("🚁 Fly Around Loaf (Open3D)", key="o3d_fly_around_btn", use_container_width=True, disabled=not _open3d_installed):
@@ -907,7 +952,7 @@ if calc_res_disp_ui:
                      btn_cols = st.columns(2)
                      with btn_cols[0]:
                          csv_ui=res_df_tab_ui.to_csv(index=False).encode('utf-8') 
-                         st.download_button("Download Results CSV",csv_ui,"cheese_portions_results.csv","text/csv",key='download-csv-main-widget', use_container_width=True)
+                         st.download_button("Download Results CSV",csv_ui,"portions_results.csv","text/csv",key='download-csv-main-widget', use_container_width=True)
                      with btn_cols[1]:
                          current_display_cloud = st.session_state.get('point_cloud_data')
                          calc_s_y = calc_res_disp_ui.get("calc_start_y")
