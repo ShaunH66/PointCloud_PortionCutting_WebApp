@@ -37,12 +37,12 @@ except ImportError:
 NOMINAL_HEIGHT = 90.0; NOMINAL_WIDTH = 93.33; NOMINAL_LENGTH = 360.0
 DEFAULT_TARGET_WEIGHT = 250.0
 DEFAULT_TOTAL_WEIGHT = (NOMINAL_WIDTH * NOMINAL_HEIGHT * NOMINAL_LENGTH) * 1.05e-9 * 1050 * 1000
-DEFAULT_RESOLUTION = 0.5; DEFAULT_SLICE_THICKNESS = 0.5
-MIN_POINTS_FOR_HULL = 10; FLOAT_EPSILON = sys.float_info.epsilon
+DEFAULT_RESOLUTION = 0.3; DEFAULT_SLICE_THICKNESS = 0.5
+MIN_POINTS_FOR_HULL = 3; FLOAT_EPSILON = sys.float_info.epsilon
 DISPLAY_PRECISION = 2; DEFAULT_BLADE_THICKNESS = 0.0
 DEFAULT_VOXEL_SIZE = 0.0; DEFAULT_WEIGHT_TOLERANCE = 0.0
 DEFAULT_START_TRIM = 0.0; DEFAULT_END_TRIM = 0.0
-DEFAULT_DIRECT_DENSITY_G_CM3 = 1.05 # g/cm^3
+DEFAULT_DIRECT_DENSITY_G_CM3 = 1.05  # replace with your default
 DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD = 350000
 
 
@@ -144,7 +144,7 @@ def load_point_cloud(uploaded_file):
 
 def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult):
     if o3d_pcd is None or not o3d_pcd.has_points(): return None, "Cloud empty for ROR est."
-    n_pts = len(o3d_pcd.points);
+    n_pts = len(o3d_pcd.points)
     if n_pts < k_neighbors + 1: return None, f"Not enough pts ({n_pts}) for k={k_neighbors}."
     try:
         tree = o3d.geometry.KDTreeFlann(o3d_pcd); dists = []
@@ -255,7 +255,7 @@ def calculate_cut_portions_reversed(
         _vp_start_t = time.time()
         prog_txt_area.text("Preparing point cloud (sorting by Y)...")
         points_df_sorted = points_df.sort_values(by='y', kind='mergesort', ignore_index=True)
-        y_coords_np = points_df_sorted['y'].to_numpy(dtype=np.float64, copy=False) # copy=False if df_sorted is not used elsewhere for this
+        y_coords_np = points_df_sorted['y'].to_numpy(dtype=np.float64, copy=False) 
         x_coords_np = points_df_sorted['x'].to_numpy(dtype=np.float64, copy=False)
         z_coords_np = points_df_sorted['z'].to_numpy(dtype=np.float64, copy=False)
         prog_txt_area.text("Point cloud prepared for profiling.")
@@ -558,8 +558,8 @@ default_persistent_states = {
     'slice_thickness': DEFAULT_SLICE_THICKNESS, 'start_trim': DEFAULT_START_TRIM,
     'end_trim': DEFAULT_END_TRIM, 'blade_thickness': DEFAULT_BLADE_THICKNESS,
     'top_down_scan': False, 'flat_bottom': False, 'voxel_size': DEFAULT_VOXEL_SIZE,
-    'resolution': DEFAULT_RESOLUTION, 'ror_nb_points': 16, 'ror_radius_val': 0.1,
-    'ror_k_radius_est': 10, 'ror_radius_mult_est': 2.0, 'enable_auto_downsample': True,
+    'resolution': DEFAULT_RESOLUTION, 'ror_nb_points': 5, 'ror_radius_val': 0.1,
+    'ror_k_radius_est': 20, 'ror_radius_mult_est': 2.0, 'enable_auto_downsample': True,
     'auto_downsample_threshold': DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD,
     'enable_y_normalization': True,
     'y_min_of_displayed_cloud': 0.0,
@@ -610,25 +610,42 @@ with st.sidebar:
                     st.error(f"Error creating PLY: {e_ply_save}")
 
     st.subheader("2. Weight & Density Settings")
-    st.radio("Density Source:", options=["Calculate from Total Weight & Volume", "Input Directly"], key="density_source", horizontal=True) 
+
+    def update_density_defaults():
+        if st.session_state.density_source == "Calculate from Total Weight & Volume":
+            st.session_state.total_weight = DEFAULT_TOTAL_WEIGHT
+        else:
+            st.session_state.direct_density_g_cm3 = DEFAULT_DIRECT_DENSITY_G_CM3
+            st.session_state.total_weight = DEFAULT_TOTAL_WEIGHT
+
+    st.radio(
+        "Density Source:",
+        options=["Calculate from Total Weight & Volume", "Input Directly"],
+        key="density_source",
+        horizontal=True,
+        on_change=update_density_defaults
+    )
+
     if st.session_state.density_source == "Calculate from Total Weight & Volume":
         st.number_input("Total Loaf Wt (g)", min_value=0.01, key="total_weight", step=50.0, format="%.2f")
         st.caption("Density will be calculated.")
-    else: 
+    else:
         st.number_input("Direct Density (g/cm³)", min_value=0.01, key="direct_density_g_cm3", step=0.01, format="%.3f", help="Enter density.")
+        st.caption("Density is input directly. Water is 1 g/cm³, most cheeses are 1.0 to 1.2 g/cm³")
         st.number_input("Total Loaf Wt (g) (Informational)", min_value=0.0, key="total_weight", step=50.0, format="%.2f", help="Reference only.")
-        st.caption("Density is input directly.")
+
     st.number_input("Target Portion Wt (g)", min_value=0.01, key="target_weight", step=10.0, format="%.2f")
     st.number_input("Target Wt Tolerance (+/- g)", min_value=0.0, key="weight_tolerance", step=0.5, format="%.1f")
     st.subheader("3. Calculation Settings")
-    st.toggle("Cut > Target (No Interpolation)", key="no_interp")
+    st.toggle("Cut Portions Always Equal Or Greater Than Target Weight (No Interpolation)", key="no_interp")
     st.slider("Calc. Slice Thickness (mm)", 0.1, 10.0, key="slice_thickness", step=0.1, format="%.1f")
     st.number_input("Start Trim (mm)", 0.0, key="start_trim", step=1.0, format="%.1f")
     st.number_input("End Trim (mm)", 0.0, key="end_trim", step=1.0, format="%.1f")
     st.number_input("Blade Thickness / Kerf (mm)", 0.0, key="blade_thickness", step=0.1, format="%.1f")
     st.subheader("4. Advanced & Simulation")
-    st.toggle("Top-Down Scan Only (1 Scanner)", key="top_down_scan")
-    st.toggle("Top & Side Scan Only (2 Scanners)", key="flat_bottom", disabled=st.session_state.top_down_scan)
+    st.caption("Presums a 4 profiler setup unless 'Top-Down Only' or 'Top & Side Only' is checked.")
+    st.toggle("Top-Down Only (1 Profiler)", key="top_down_scan")
+    st.toggle("Top & Side Only (2 Profilers)", key="flat_bottom", disabled=st.session_state.top_down_scan)
     st.number_input("Voxel Downsample Size (mm)", 0.0, key="voxel_size", step=0.25, format="%.2f")
     if st.session_state.voxel_size > 0 and not _open3d_installed: st.warning("Voxel downsampling needs `open3d`.")
     st.checkbox("Enable Auto-Downsample", key="enable_auto_downsample", help="If point count exceeds threshold, automatically downsample using Random Sampling.")
@@ -640,7 +657,7 @@ with st.sidebar:
         disabled=not st.session_state.enable_auto_downsample
     )
     st.checkbox("Normalize Y-coords before Calculation", key="enable_y_normalization", help="Shift Y to start near Y=0 for calc.")
-    st.number_input("Scanner Resolution (mm)", 0.01, key="resolution", step=0.1, format="%.2f")
+    st.number_input("Generated Test Data Cloud Resolution (mm)", 0.01, key="resolution", step=0.1, format="%.2f")
     st.subheader("5. Point Cloud Filtering (Optional)")
     st.caption("Applied after loading & downsampling. Requires 'open3d'.")
     with st.expander("Radius Outlier Removal (ROR)", expanded=False):
@@ -694,15 +711,13 @@ with st.sidebar:
                  del st.session_state[key_to_clear]
             elif key_to_clear in ['calc_results', 'ror_filter_applied_msg', 'ror_applied_cloud_id', 'ror_estimated_radius_msg', 'previous_data_source_tracker', 'data_origin', 'last_file_id', 'point_cloud_data', 'y_min_of_displayed_cloud']:
                  del st.session_state[key_to_clear]
-        if 'uploader_widget' in st.session_state:
-            st.session_state.uploader_widget = None 
         if 'o3d_animation_globals' in globals(): 
             reset_o3d_animation_globals()
         st.toast("All settings cleared. Defaults will apply on refresh. Point cloud will reload/regenerate.", icon="🧼")
         st.rerun()
 
 st.title(f"🔪 Point Cloud Cutting Portion Calculator")
-st.markdown("<p style='font-size:24px;'>Created By Shaun Harris</p>", unsafe_allow_html=True)
+st.markdown("<p style='font-size:18px;'>Created By Shaun Harris</p>", unsafe_allow_html=True)
 st.markdown("Calculates cuts. **Portion 1** is the first physical piece (waste).")
 
 with st.expander("ℹ️ Help / App Information", expanded=False):
@@ -761,9 +776,31 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     4.  **Cutting (Reversed):** Starts from loaf's rear (`calc_ey_eff`). Accumulates weight moving to front. Cuts when `Target Wt - Tolerance` is met/exceeded. Interpolation (if ON) refines cut for `Target Wt`. Blade thickness shifts next portion's start.
     5.  **Portion Refinement:** Final portion weights are recalculated using precise cut boundaries and the volume profile.
     6.  **Output Ordering:** Portions are listed from front to rear.
-    ---
-    *Created by Shaun Harris*
+    ---        
     """)
+
+    st.subheader("🎬 Video: Convex Hull Scanning Algorithm Explained")
+    st.markdown("""
+    #### **Convex Hull for Area Estimation:** 
+    *   For each thin slice of the point cloud (unless "Top-Down Scan" is selected), the application projects the points within that slice onto the XZ plane. It then calculates the **Convex Hull** of these 2D points.
+    *   What is a Convex Hull?* Imagine stretching a rubber band around the outermost points in that 2D slice; the shape enclosed by the rubber band is the convex hull. It's the smallest convex polygon that contains all the points.
+    *   The area of this convex hull is used as an approximation of the cheese's cross-sectional area for that specific slice. This method is effective for capturing the general shape of the loaf's cross-section, especially if the loaf is reasonably convex.
+    *   If the "Top & Side Scan Only (Flat Bottom)" option is active, points at Z=0 are added to the slice's XZ points before computing the hull to ensure the bottom is flat.  
+    ---   
+    """)
+    col1, col_video, col3 = st.columns([0.5, 0.5, 0.5]) 
+    with col_video:
+        try:
+            video_file_path = "C:\\ImagePortion\\Convex_Hull _Graham_Scan_Algorithm.mp4" 
+            if os.path.exists(video_file_path):
+                video_file = open(video_file_path, 'rb')
+                video_bytes = video_file.read()
+                st.video(video_bytes)
+                video_file.close()
+            else:
+                st.warning(f"Video file not found at: {video_file_path}")
+        except Exception as e:
+            st.error(f"Error loading video: {e}")
 
 refresh_data_flag_main_ui = False 
 previous_data_source_tracker = st.session_state.get("previous_data_source_tracker", None)
@@ -786,6 +823,7 @@ if refresh_data_flag_main_ui: # BLOCK 1
     if st.session_state.data_source == "Generate Test Data":
          with st.spinner("Generating test data..."):
             temp_df_load_main_ui = generate_test_point_cloud(resolution=st.session_state.resolution, seed=42)
+            st.session_state.original_point_count = len(temp_df_load_main_ui) if temp_df_load_main_ui is not None else 0
             st.session_state.data_origin = "Generated"; st.session_state.last_file_id = "generated_data"
             if temp_df_load_main_ui is not None: st.toast(f"Generated {len(temp_df_load_main_ui):,} pts.", icon="✨")
             else: st.error("Failed to generate test data.")
@@ -795,6 +833,7 @@ if refresh_data_flag_main_ui: # BLOCK 1
         current_step += 1; spinner_msg_load = f"Step {current_step}/{total_steps}: Reading {uploaded_file_sb.name}..."
         with st.spinner(spinner_msg_load): temp_df_load_main_ui = load_point_cloud(uploaded_file_sb)
         if temp_df_load_main_ui is not None:
+            st.session_state.original_point_count = len(temp_df_load_main_ui)
             st.session_state.data_origin = f"Uploaded: {uploaded_file_sb.name}"; st.session_state.last_file_id = f"{uploaded_file_sb.name}-{uploaded_file_sb.size}"
             if st.session_state.enable_auto_downsample and len(temp_df_load_main_ui) > st.session_state.auto_downsample_threshold: 
                 current_step +=1; spinner_msg_auto_ds = f"Step {current_step}/{total_steps}: Auto-downsampling (Random) as point count {len(temp_df_load_main_ui):,} > {st.session_state.auto_downsample_threshold:,}..."
@@ -838,14 +877,16 @@ if points_df_disp_ui is not None and not points_df_disp_ui.empty:
     try:
         if np.all(np.isfinite(points_df_disp_ui[['x','y','z']].values)):
             min_dims_ui,max_dims_ui,dims_ui=points_df_disp_ui.min(),points_df_disp_ui.max(),points_df_disp_ui.max()-points_df_disp_ui.min()
-            col1_met_ui.metric("Current Points", f"{len(points_df_disp_ui):,}")
+            col1_met_ui.metric("Current Points",f"{len(points_df_disp_ui):,} pts",)
+            if st.session_state.enable_auto_downsample and st.session_state.original_point_count > st.session_state.auto_downsample_threshold:
+                st.markdown(f"Before Downsample: {st.session_state.get('original_point_count', 0):,} pts")
             col2_met_ui.metric("Loaf Length (Y)", f"{dims_ui.get('y', np.nan):.2f} mm")
             col3_met_ui.metric("Est. Max Width (X)", f"{dims_ui.get('x', np.nan):.2f} mm")
         else: col1_met_ui.metric("Current Points",f"{len(points_df_disp_ui):,}"); col2_met_ui.warning("Non-finite data in cloud.")
     except Exception as e_met_ui: st.warning(f"Dimension display error: {e_met_ui}")
 
     st.markdown("---")
-    st.subheader("🎬 Interactive 3D Inspection (External Open3D Window. Script Needs To Be Ran Locally)")
+    st.subheader("🎬 Interactive 3D Inspection (External Open3D Window. Needs To Be Ran Locally)")
     st.caption("Launches a new window with Open3D for animated inspection. Close the Open3D window to return to the app.")
     
     if st.button("🚁 Fly Around Loaf (Open3D)", key="o3d_fly_around_btn", use_container_width=True, disabled=not _open3d_installed):
@@ -892,6 +933,7 @@ if calc_button_main_ui:
                     if direct_density_g_cm3_val > FLOAT_EPSILON:
                         input_direct_density_g_mm3 = direct_density_g_cm3_val / 1000.0 
                         st.toast(f"Using direct density: {direct_density_g_cm3_val:.3f} g/cm³.", icon="🔬")
+
                     else:
                         st.error("Direct density selected, but value is invalid."); st.session_state.calc_results = {"status": "Error: Invalid direct density."}; st.rerun()
                 else: 
