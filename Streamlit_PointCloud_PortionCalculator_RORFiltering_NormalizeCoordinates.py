@@ -656,7 +656,7 @@ with st.sidebar:
         help="If 'Enable Auto-Downsample' is checked, clouds with more points than this threshold will be downsampled.",
         disabled=not st.session_state.enable_auto_downsample
     )
-    st.checkbox("Normalize Y-coords before Calculation", key="enable_y_normalization", help="Shift Y to start near Y=0 for calc.")
+    st.checkbox("Normalize Y-coords Before Calculation", key="enable_y_normalization", help="Shift Y to start near Y=0 for calc.")
     st.number_input("Generated Test Data Cloud Resolution (mm)", 0.01, key="resolution", step=0.1, format="%.2f")
     st.subheader("5. Point Cloud Filtering (Optional)")
     st.caption("Applied after loading & downsampling. Requires 'open3d'.")
