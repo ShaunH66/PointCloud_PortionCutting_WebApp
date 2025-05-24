@@ -24,6 +24,8 @@ import time   # For basic timing
 import tempfile # For temporary file handling with open3d
 import os       # For temporary file handling
 import openpyxl # for .xlsx/.xls support
+import alphashape
+from shapely.geometry import Polygon, MultiPolygon
 
 # --- Optional: Import open3d with error handling ---
 _open3d_installed = False
@@ -45,7 +47,7 @@ DEFAULT_VOXEL_SIZE = 0.0; DEFAULT_WEIGHT_TOLERANCE = 0.0
 DEFAULT_START_TRIM = 0.0; DEFAULT_END_TRIM = 0.0
 DEFAULT_DIRECT_DENSITY_G_CM3 = 1.05
 DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD = 350000
-DEFAULT_ALPHA_SHAPE_VALUE = 3.0 # Updated default
+DEFAULT_ALPHA_SHAPE_VALUE = 0.02
 
 # --- Point Cloud Generation ---
 def generate_test_point_cloud(
@@ -158,18 +160,18 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult):
         return est_rad, f"Avg k-NN dist ({samples} samples, k={k_neighbors}): {avg_dist:.4f}mm. Suggested Radius (x{mult:.2f}): {est_rad:.4f}mm"
     except Exception as e: return None, f"ROR radius est. error: {e}"
 
-# calculate_slice_profile (Area/Boundary Calculation for a slice)
 def calculate_slice_profile(
     slice_x_np, slice_z_np,
     flat_bottom, top_down, area_method, alpha_value,
-    min_points_for_processing=MIN_POINTS_FOR_HULL
+    min_points_for_processing=MIN_POINTS_FOR_HULL,
+
+    alphashape_slice_voxel_size=0.5 
 ):
     area = 0.0
     boundary_points_plot = None
-    n_sl_pts = len(slice_x_np)
 
     if top_down:
-        if n_sl_pts >= 2:
+        if len(slice_x_np) >= 2:
             sl_min_x, sl_max_x = slice_x_np.min(), slice_x_np.max()
             width_for_area = sl_max_x - sl_min_x
             mean_z_height = np.mean(slice_z_np)
@@ -177,64 +179,82 @@ def calculate_slice_profile(
                 area = width_for_area * mean_z_height
             if area > 0:
                  boundary_points_plot = np.array([
-                    [sl_min_x, 0], [sl_max_x, 0],
-                    [sl_max_x, mean_z_height], [sl_min_x, mean_z_height],
-                    [sl_min_x, 0]
+                    [sl_min_x, 0], [sl_max_x, 0], [sl_max_x, mean_z_height], [sl_min_x, mean_z_height], [sl_min_x, 0]
                 ])
-    else:
-        if n_sl_pts >= 2:
-            current_slice_points_2d = np.column_stack((slice_x_np, slice_z_np))
-            if flat_bottom:
-                sl_min_x_orig, sl_max_x_orig = slice_x_np.min(), slice_x_np.max()
-                if n_sl_pts > 0 :
-                    current_slice_points_2d = np.vstack((current_slice_points_2d,
-                                                     [[sl_min_x_orig, 0.0], [sl_max_x_orig, 0.0]]))
-                else: return 0.0, None
+        return area, boundary_points_plot
 
+    current_slice_points_2d = np.column_stack((slice_x_np, slice_z_np))
+    if flat_bottom and len(slice_x_np) > 0:
+        sl_min_x_orig, sl_max_x_orig = slice_x_np.min(), slice_x_np.max()
+        current_slice_points_2d = np.vstack((current_slice_points_2d,
+                                             [[sl_min_x_orig, 0.0], [sl_max_x_orig, 0.0]]))
+    
+    if len(current_slice_points_2d) < 3:
+        return 0.0, None
+
+    if area_method == "Alpha Shape":
+        points_for_alphashape_calc = current_slice_points_2d
+        if _open3d_installed and alphashape_slice_voxel_size and alphashape_slice_voxel_size > 0 and len(current_slice_points_2d) > 50:
+            try:
+                #print(f"DEBUG: AlphaShape - Before slice downsample: {len(current_slice_points_2d)} pts") # For debug
+                temp_pcd_3d = o3d.geometry.PointCloud()
+                temp_pcd_3d.points = o3d.utility.Vector3dVector(
+                    np.hstack((current_slice_points_2d, np.zeros((len(current_slice_points_2d), 1))))
+                )
+                downsampled_pcd = temp_pcd_3d.voxel_down_sample(alphashape_slice_voxel_size)
+                if downsampled_pcd.has_points():
+                    points_for_alphashape_calc = np.asarray(downsampled_pcd.points)[:, :2]
+                    #print(f"DEBUG: AlphaShape - After slice downsample: {len(points_for_alphashape_calc)} pts")
+            except Exception as e_ds:
+                st.sidebar.warning(f"Slice downsample error: {e_ds}") 
+                pass
+
+        if len(points_for_alphashape_calc) < 3: 
+             area = 0.0; boundary_points_plot = None
+        else:
+            try:
+                alpha_polygon_raw = alphashape.alphashape(points_for_alphashape_calc, alpha_value)
+                final_polygon_for_area = None
+                if isinstance(alpha_polygon_raw, Polygon):
+                    final_polygon_for_area = alpha_polygon_raw
+                elif isinstance(alpha_polygon_raw, MultiPolygon):
+                    if alpha_polygon_raw.geoms:
+                        largest_geom = None; max_a = -1.0
+                        for geom in alpha_polygon_raw.geoms:
+                            if geom.area > max_a: max_a = geom.area; largest_geom = geom
+                        final_polygon_for_area = largest_geom
+                
+                if final_polygon_for_area and hasattr(final_polygon_for_area, 'area'):
+                    area = final_polygon_for_area.area
+                    if hasattr(final_polygon_for_area, 'exterior'):
+                        x_coords, z_coords = final_polygon_for_area.exterior.xy
+                        boundary_points_plot = np.column_stack((x_coords, z_coords))
+                if not (np.isfinite(area) and area >= 0): area = 0.0
+            except Exception as e_alpha:
+                area = 0.0; boundary_points_plot = None
+    elif area_method == "Convex Hull":
+        try:
+            hull = ConvexHull(current_slice_points_2d)
+            area = hull.volume
+            boundary_points_plot = current_slice_points_2d[hull.vertices]
+            boundary_points_plot = np.vstack((boundary_points_plot, boundary_points_plot[0]))
+            if not (np.isfinite(area) and area >= 0): area = 0.0
+        except (QhullError, ValueError, Exception):
+            area = 0.0; boundary_points_plot = None
+    
+    if area <= FLOAT_EPSILON and len(current_slice_points_2d) >=2 :
+        if boundary_points_plot is None:
             eff_min_x = current_slice_points_2d[:,0].min(); eff_max_x = current_slice_points_2d[:,0].max()
             eff_min_z = current_slice_points_2d[:,1].min(); eff_max_z = current_slice_points_2d[:,1].max()
             width_for_area = eff_max_x - eff_min_x; height_for_area = eff_max_z - eff_min_z
-            unique_points_for_processing = np.unique(current_slice_points_2d, axis=0)
-
-            if unique_points_for_processing.shape[0] >= min_points_for_processing and \
-               width_for_area > FLOAT_EPSILON * 10 and height_for_area > FLOAT_EPSILON * 10:
-                if area_method == "Alpha Shape" and _open3d_installed:
-                    try:
-                        pcd_o3d_slice = o3d.geometry.PointCloud()
-                        points_for_o3d_alpha = np.hstack((current_slice_points_2d, np.zeros((current_slice_points_2d.shape[0], 1))))
-                        pcd_o3d_slice.points = o3d.utility.Vector3dVector(points_for_o3d_alpha)
-                        mesh_alpha = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd_o3d_slice, alpha_value)
-                        if mesh_alpha.has_triangles():
-                            area = mesh_alpha.get_surface_area() / 2.0
-                            if mesh_alpha.has_vertices():
-                                alpha_vertices_3d = np.asarray(mesh_alpha.vertices)
-                                if alpha_vertices_3d.shape[0] >= 3:
-                                    alpha_vertices_2d_for_plot = alpha_vertices_3d[:, [0, 1]]
-                                    try:
-                                        hull_of_alpha = ConvexHull(alpha_vertices_2d_for_plot)
-                                        boundary_points_plot = alpha_vertices_2d_for_plot[hull_of_alpha.vertices]
-                                        boundary_points_plot = np.vstack((boundary_points_plot, boundary_points_plot[0]))
-                                    except QhullError: boundary_points_plot = None
-                        if not (np.isfinite(area) and area >= 0): area = 0.0
-                    except (RuntimeError, Exception): area = 0.0 ; boundary_points_plot = None
-
-                if area <= FLOAT_EPSILON and (area_method == "Convex Hull" or (area_method == "Alpha Shape" and not _open3d_installed) or (area_method == "Alpha Shape" and area == 0.0)):
-                    try:
-                        hull = ConvexHull(current_slice_points_2d)
-                        area = hull.volume
-                        boundary_points_plot = current_slice_points_2d[hull.vertices]
-                        boundary_points_plot = np.vstack((boundary_points_plot, boundary_points_plot[0]))
-                        if not (np.isfinite(area) and area >= 0): area = 0.0
-                    except (QhullError, ValueError, Exception): area = 0.0; boundary_points_plot = None
-            if area <= FLOAT_EPSILON:
-                area = max(0.0, width_for_area) * max(0.0, height_for_area)
-                if area > 0 and boundary_points_plot is None:
-                    boundary_points_plot = np.array([
-                        [eff_min_x, eff_min_z], [eff_max_x, eff_min_z],
-                        [eff_max_x, eff_max_z], [eff_min_x, eff_max_z],
-                        [eff_min_x, eff_min_z]
-                    ])
-            if not (np.isfinite(area) and area >= 0): area = 0.0
+            area = max(0.0, width_for_area) * max(0.0, height_for_area)
+            if area > 0 :
+                 boundary_points_plot = np.array([
+                    [eff_min_x, eff_min_z], [eff_max_x, eff_min_z],
+                    [eff_max_x, eff_max_z], [eff_min_x, eff_max_z],
+                    [eff_min_x, eff_min_z]
+                ])
+    if not (np.isfinite(area) and area >= 0): area = 0.0
     return area, boundary_points_plot
 
 def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y):
@@ -545,6 +565,7 @@ default_persistent_states = {
     'alpha_shape_value': DEFAULT_ALPHA_SHAPE_VALUE,
     'calculated_df_for_inspection': None,
     'slice_inspector_slider': None,
+    'alphashape_slice_voxel': 0.5,
 }
 for key_init, value_init in default_persistent_states.items():
     if key_init not in st.session_state: st.session_state[key_init] = value_init
@@ -620,13 +641,16 @@ with st.sidebar:
     if st.session_state.area_calculation_method == "Alpha Shape":
         if _open3d_installed:
             st.number_input(
-                "Alpha Value (for Alpha Shape)", min_value=0.01, key="alpha_shape_value", step=0.1, format="%.2f",
-                help="Controls tightness. Smaller=tighter (e.g., 3-10mm). Tune based on point density. Requires Open3D."
+                "Alpha Value (for Alpha Shape)", min_value=0.0,
+                key="alpha_shape_value", step=0.01, format="%.3f",
+                help="Alpha for 'alphashape' lib. 0=Convex Hull. Small positive (e.g., 0.01-0.2) for concavity."
             )
-        else:
-            st.warning("Alpha Shape requires Open3D. Falling back to Convex Hull.", icon="⚠️")
-            if st.session_state.area_calculation_method == "Alpha Shape":
-                 st.session_state.area_calculation_method = "Convex Hull"; st.rerun()
+
+            st.number_input(
+                "AlphaShape Slice Voxel Size (mm, 0=disable)", min_value=0.0, value=0.5, # Default to 0.5mm
+                key="alphashape_slice_voxel", step=0.1, format="%.2f",
+                help="Downsamples points within each 2D slice before AlphaShape calculation for speed. 0 to disable. Try 0.5-2.0mm."
+            )
 
     st.number_input("Voxel Downsample Size (mm)", 0.0, key="voxel_size", step=0.25, format="%.2f")
     if st.session_state.voxel_size > 0 and not _open3d_installed: st.warning("Voxel downsampling needs `open3d`.")
