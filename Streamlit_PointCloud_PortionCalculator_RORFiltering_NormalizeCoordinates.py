@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Point Cloud Portion Calculator (Streamlit App)
 # Created - Shaun Harris
-# Version: 1.5.2 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
+# Version: 1.5.3 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
 #                 Volume Modes (Hull, Flat Bottom, Top-Down), Reverse Calc,
 #                 Waste First, Interpolation Toggle, Kerf, Tolerance, Trims,
 #                 Voxel Downsampling, Optional Auto-Downsampling (Random) with User Threshold,
@@ -10,7 +10,7 @@
 #                 Decoupled data refresh, Optional Y-Normalization before calculation,
 #                 Direct Density Input, Open3D Fly Around, Open3D Static Cuts View,
 #                 Reset Button, Help Section, NumPy Optimized Volume Profiling,
-#                 Alpha Shapes for Area Calc
+#                 Alpha Shapes for Area Calc, Slider-based Area Slice Inspector)
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -45,7 +45,7 @@ DEFAULT_VOXEL_SIZE = 0.0; DEFAULT_WEIGHT_TOLERANCE = 0.0
 DEFAULT_START_TRIM = 0.0; DEFAULT_END_TRIM = 0.0
 DEFAULT_DIRECT_DENSITY_G_CM3 = 1.05
 DEFAULT_AUTO_DOWNSAMPLE_THRESHOLD = 350000
-DEFAULT_ALPHA_SHAPE_VALUE = 3.0
+DEFAULT_ALPHA_SHAPE_VALUE = 3.0 # Updated default
 
 # --- Point Cloud Generation ---
 def generate_test_point_cloud(
@@ -175,7 +175,12 @@ def calculate_slice_profile(
             mean_z_height = np.mean(slice_z_np)
             if np.isfinite(width_for_area) and np.isfinite(mean_z_height) and width_for_area >= 0 and mean_z_height >= 0:
                 area = width_for_area * mean_z_height
-            
+            if area > 0:
+                 boundary_points_plot = np.array([
+                    [sl_min_x, 0], [sl_max_x, 0],
+                    [sl_max_x, mean_z_height], [sl_min_x, mean_z_height],
+                    [sl_min_x, 0]
+                ])
     else:
         if n_sl_pts >= 2:
             current_slice_points_2d = np.column_stack((slice_x_np, slice_z_np))
@@ -184,7 +189,7 @@ def calculate_slice_profile(
                 if n_sl_pts > 0 :
                     current_slice_points_2d = np.vstack((current_slice_points_2d,
                                                      [[sl_min_x_orig, 0.0], [sl_max_x_orig, 0.0]]))
-                else: return 0.0
+                else: return 0.0, None
 
             eff_min_x = current_slice_points_2d[:,0].min(); eff_max_x = current_slice_points_2d[:,0].max()
             eff_min_z = current_slice_points_2d[:,1].min(); eff_max_z = current_slice_points_2d[:,1].max()
@@ -201,19 +206,36 @@ def calculate_slice_profile(
                         mesh_alpha = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd_o3d_slice, alpha_value)
                         if mesh_alpha.has_triangles():
                             area = mesh_alpha.get_surface_area() / 2.0
+                            if mesh_alpha.has_vertices():
+                                alpha_vertices_3d = np.asarray(mesh_alpha.vertices)
+                                if alpha_vertices_3d.shape[0] >= 3:
+                                    alpha_vertices_2d_for_plot = alpha_vertices_3d[:, [0, 1]]
+                                    try:
+                                        hull_of_alpha = ConvexHull(alpha_vertices_2d_for_plot)
+                                        boundary_points_plot = alpha_vertices_2d_for_plot[hull_of_alpha.vertices]
+                                        boundary_points_plot = np.vstack((boundary_points_plot, boundary_points_plot[0]))
+                                    except QhullError: boundary_points_plot = None
                         if not (np.isfinite(area) and area >= 0): area = 0.0
-                    except (RuntimeError, Exception): area = 0.0
+                    except (RuntimeError, Exception): area = 0.0 ; boundary_points_plot = None
 
-                if area <= FLOAT_EPSILON and (area_method == "Convex Hull" or (area_method == "Alpha Shape" and not _open3d_installed) or area == 0.0): # Fallback
+                if area <= FLOAT_EPSILON and (area_method == "Convex Hull" or (area_method == "Alpha Shape" and not _open3d_installed) or (area_method == "Alpha Shape" and area == 0.0)):
                     try:
                         hull = ConvexHull(current_slice_points_2d)
                         area = hull.volume
+                        boundary_points_plot = current_slice_points_2d[hull.vertices]
+                        boundary_points_plot = np.vstack((boundary_points_plot, boundary_points_plot[0]))
                         if not (np.isfinite(area) and area >= 0): area = 0.0
-                    except (QhullError, ValueError, Exception): area = 0.0
+                    except (QhullError, ValueError, Exception): area = 0.0; boundary_points_plot = None
             if area <= FLOAT_EPSILON:
                 area = max(0.0, width_for_area) * max(0.0, height_for_area)
+                if area > 0 and boundary_points_plot is None:
+                    boundary_points_plot = np.array([
+                        [eff_min_x, eff_min_z], [eff_max_x, eff_min_z],
+                        [eff_max_x, eff_max_z], [eff_min_x, eff_max_z],
+                        [eff_min_x, eff_min_z]
+                    ])
             if not (np.isfinite(area) and area >= 0): area = 0.0
-    return area # Only return area
+    return area, boundary_points_plot
 
 def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y):
     act_vol = 0.0
@@ -279,7 +301,7 @@ def calculate_cut_portions_reversed(
             if start_idx < end_idx:
                 slice_x_for_profile = x_coords_np[start_idx:end_idx]
                 slice_z_for_profile = z_coords_np[start_idx:end_idx]
-                sl_area = calculate_slice_profile(
+                sl_area, _ = calculate_slice_profile(
                     slice_x_for_profile, slice_z_for_profile,
                     flat_bottom if not top_down else False,
                     top_down, area_calc_method, alpha_shape_param
@@ -395,7 +417,7 @@ def plot_area_profile(volume_profile, sorted_y_starts, slice_increment_mm, calc_
     if not volume_profile or len(sorted_y_starts) == 0: return go.Figure(layout=dict(title="Area Profile (No Data)", height=300))
     y_values_plot = sorted_y_starts
     area_values_plot = [(volume_profile.get(y_val, 0) / slice_increment_mm if slice_increment_mm > FLOAT_EPSILON else 0) for y_val in y_values_plot]
-    fig = go.Figure(); fig.add_trace(go.Scatter(x=y_values_plot, y=area_values_plot, mode='lines', name='Est. Area', line=dict(shape='spline', smoothing=0.5))) # Removed markers
+    fig = go.Figure(); fig.add_trace(go.Scatter(x=y_values_plot, y=area_values_plot, mode='lines', name='Est. Area', line=dict(shape='spline', smoothing=0.5)))
     plot_min_y_boundary = y_values_plot[0] if len(y_values_plot) > 0 else 0
     plot_max_y_boundary = y_values_plot[-1] + slice_increment_mm if len(y_values_plot) > 0 else 0
     if calc_start_y is not None and calc_start_y > plot_min_y_boundary: fig.add_vrect(x0=plot_min_y_boundary, x1=calc_start_y, fillcolor="grey", opacity=0.15, layer="below", line_width=0, name="Start Trim")
@@ -501,7 +523,7 @@ def launch_o3d_viewer_with_cuts(points_df, portions_data, calc_start_y_from_res,
     except Exception as e: st.error(f"Failed to launch Open3D window: {e}")
     finally: st.info("Open3D window closed.")
 
-st.set_page_config(layout="wide", page_title="Point Cloud Portion Calc v1.5.2", page_icon="🔪")
+st.set_page_config(layout="wide", page_title="Point Cloud Portion Calc v1.5.3", page_icon="🔪")
 
 default_persistent_states = {
     'point_cloud_data': None, 'data_origin': None, 'last_file_id': None, 'calc_results': None,
@@ -521,9 +543,22 @@ default_persistent_states = {
     'direct_density_g_cm3': DEFAULT_DIRECT_DENSITY_G_CM3,
     'area_calculation_method': "Convex Hull",
     'alpha_shape_value': DEFAULT_ALPHA_SHAPE_VALUE,
+    'calculated_df_for_inspection': None,
+    'slice_inspector_slider': None,
 }
 for key_init, value_init in default_persistent_states.items():
     if key_init not in st.session_state: st.session_state[key_init] = value_init
+
+def update_density_defaults():
+    if st.session_state.density_source == "Calculate from Total Weight & Volume":
+        st.session_state.total_weight = DEFAULT_TOTAL_WEIGHT
+    else:
+        st.session_state.direct_density_g_cm3 = DEFAULT_DIRECT_DENSITY_G_CM3
+        st.session_state.total_weight = DEFAULT_TOTAL_WEIGHT
+
+def update_area_calculation_defaults():
+    if st.session_state.area_calculation_method == "Alpha Shape":
+        st.session_state.alpha_shape_value = DEFAULT_ALPHA_SHAPE_VALUE
 
 with st.sidebar:
     st.header("🔪 Parameters")
@@ -556,9 +591,6 @@ with st.sidebar:
                 except Exception as e_ply_save: st.error(f"Error creating PLY: {e_ply_save}")
 
     st.subheader("2. Weight & Density Settings")
-    def update_density_defaults():
-        if st.session_state.density_source == "Calculate from Total Weight & Volume": st.session_state.total_weight = DEFAULT_TOTAL_WEIGHT
-        else: st.session_state.direct_density_g_cm3 = DEFAULT_DIRECT_DENSITY_G_CM3; st.session_state.total_weight = DEFAULT_TOTAL_WEIGHT
     st.radio("Density Source:", options=["Calculate from Total Weight & Volume", "Input Directly"], key="density_source", horizontal=True, on_change=update_density_defaults)
     if st.session_state.density_source == "Calculate from Total Weight & Volume":
         st.number_input("Total Loaf Wt (g)", min_value=0.01, key="total_weight", step=50.0, format="%.2f")
@@ -580,33 +612,21 @@ with st.sidebar:
     st.toggle("Top-Down Only (1 Profiler)", key="top_down_scan")
     st.toggle("Top & Side Only (2 Profilers - Assumes Flat Bottom)", key="flat_bottom", disabled=st.session_state.top_down_scan)
 
-    def update_area_calculation_defaults():
-        if st.session_state.area_calculation_method == "Alpha Shape":
-            st.session_state.alpha_shape_value = DEFAULT_ALPHA_SHAPE_VALUE
-
     st.radio(
-            "Cross-Section Area Method:",
-            options=["Convex Hull", "Alpha Shape"],
-            key="area_calculation_method",
-            horizontal=True,
-            help="Method for area. Alpha Shape (concave) can be more accurate but needs Open3D & tuning.",
-            on_change=update_area_calculation_defaults
-        )
+        "Cross-Section Area Method:", options=["Convex Hull", "Alpha Shape"], key="area_calculation_method", horizontal=True,
+        help="Method for area. Alpha Shape (concave) can be more accurate but needs Open3D & tuning.",
+        on_change=update_area_calculation_defaults
+    )
     if st.session_state.area_calculation_method == "Alpha Shape":
         if _open3d_installed:
             st.number_input(
-                "Alpha Value (for Alpha Shape)",
-                min_value=0.01,
-                key="alpha_shape_value", 
-                step=0.1,
-                format="%.2f",
-                help="Controls tightness. Smaller=tighter. Tune based on point density. Requires Open3D.\nA starting point could be 2 to 5 times the estimated average point spacing within the 2D slice."
+                "Alpha Value (for Alpha Shape)", min_value=0.01, key="alpha_shape_value", step=0.1, format="%.2f",
+                help="Controls tightness. Smaller=tighter (e.g., 3-10mm). Tune based on point density. Requires Open3D."
             )
         else:
             st.warning("Alpha Shape requires Open3D. Falling back to Convex Hull.", icon="⚠️")
-            if st.session_state.area_calculation_method == "Alpha Shape": 
-                st.session_state.area_calculation_method = "Convex Hull"
-                st.rerun() 
+            if st.session_state.area_calculation_method == "Alpha Shape":
+                 st.session_state.area_calculation_method = "Convex Hull"; st.rerun()
 
     st.number_input("Voxel Downsample Size (mm)", 0.0, key="voxel_size", step=0.25, format="%.2f")
     if st.session_state.voxel_size > 0 and not _open3d_installed: st.warning("Voxel downsampling needs `open3d`.")
@@ -669,7 +689,8 @@ with st.sidebar:
                key_to_clear in ['calc_results', 'ror_filter_applied_msg', 'ror_applied_cloud_id',
                                 'ror_estimated_radius_msg', 'previous_data_source_tracker',
                                 'data_origin', 'last_file_id', 'point_cloud_data',
-                                'y_min_of_displayed_cloud']:
+                                'y_min_of_displayed_cloud', 'calculated_df_for_inspection',
+                                'slice_inspector_slider']:
                 del st.session_state[key_to_clear]
         if 'o3d_animation_globals' in globals(): reset_o3d_animation_globals()
         st.toast("All settings cleared. Defaults will apply. Cloud will reload/regenerate.", icon="🧼")
@@ -711,6 +732,7 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     *   **Analysis Plots Tab:**
         *   `Area Profile`: Estimated cross-sectional area.
         *   `Cumulative Weight Profile`: Weight accumulation.
+        *   `Slice Profile Inspector`: (Below plots) Use the slider to select a Y-coordinate and view the detailed XZ point distribution and the calculated shape (Convex Hull or Alpha Shape) for that slice.
     ---
     #### **Calculation Process Overview:**
     1.  Preprocessing: Load, Normalize (opt), Downsample (opt), ROR (opt).
@@ -733,7 +755,6 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
 
     ---
     """)
-
     st.subheader("🎬 Video: Convex Hull Scanning Algorithm Explained")
     col1_vid, col_video_main, col3_vid = st.columns([0.2, 0.6, 0.2])
     with col_video_main:
@@ -743,10 +764,8 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
                 video_file = open(video_file_path, 'rb')
                 st.video(video_file.read())
                 video_file.close()
-            else:
-                st.caption(f"Video not found at specified path.")
-        except Exception as e_vid:
-            st.error(f"Error loading video: {e_vid}")
+            else: st.caption(f"Video not found at specified path.")
+        except Exception as e_vid: st.error(f"Error loading video: {e_vid}")
 
 refresh_data_flag_main_ui = False
 previous_data_source_tracker = st.session_state.get("previous_data_source_tracker", None)
@@ -765,6 +784,7 @@ if refresh_data_flag_main_ui:
     st.toast("Refreshing data source...", icon="🔄")
     st.session_state.calc_results = None; st.session_state.ror_filter_applied_msg = None
     st.session_state.ror_applied_cloud_id = None; st.session_state.ror_estimated_radius_msg = None
+    st.session_state.calculated_df_for_inspection = None
     temp_df_load_main_ui = None; current_step = 0; total_steps = 1
     if st.session_state.data_source == "Generate Test Data":
          with st.spinner("Generating test data..."):
@@ -864,6 +884,7 @@ if calc_button_main_ui:
                 df_to_calculate_with['y'] = df_to_calculate_with['y'] - y_min_for_normalization
                 st.toast(f"Calc using Y-coords normalized by {-y_min_for_normalization:.2f}mm.", icon="📏")
             else: st.toast("Calculation using original Y-coordinates.", icon="📐")
+            st.session_state.calculated_df_for_inspection = df_to_calculate_with.copy()
 
             with st.spinner("Calculating cuts... This may take a moment..."):
                 eff_fb_calc_ui = st.session_state.flat_bottom or st.session_state.top_down_scan
@@ -889,7 +910,6 @@ if calc_button_main_ui:
                     alpha_shape_param=st.session_state.alpha_shape_value
                 )
                 if st.session_state.calc_results: st.session_state.calc_results["y_offset_for_plot"] = y_min_for_normalization
-
             st.rerun()
         else: st.error("Cannot calc - cloud has non-finite values."); st.session_state.calc_results = {"status": "Error: Non-finite values in cloud."}
     else: st.warning("No point cloud data for calculation.")
@@ -918,7 +938,7 @@ if calc_res_disp_ui:
                      styles_ui.iloc[1:][outside_mask_ui.fillna(False).values]='background-color: #F8D7DA;'
                  except (KeyError, Exception): pass
             return styles_ui
-        tab1_ui, tab2_ui = st.tabs(["📊 Results Summary", "📈 Analysis Plots"]) # REMOVED Slice Inspector from tab name
+        tab1_ui, tab2_ui = st.tabs(["📊 Results Summary", "📈 Analysis Plots & Slice Inspector"])
 
         with tab1_ui:
             st.markdown("**Calculated Portions (Portion 1 is waste/first piece):**")
@@ -962,27 +982,106 @@ if calc_res_disp_ui:
                  if any(abs(p_val_ui.get('weight',0)-st.session_state.target_weight)<(10**(-DISPLAY_PRECISION))/2 for p_val_ui in portions_disp_ui[1:]):
                       st.caption(f"Note: Wts rounded." + (" Exact target hit w/o interp unusual." if st.session_state.no_interp else ""))
 
-        with tab2_ui: # Analysis Plots Tab
+        with tab2_ui:
              st.subheader("Calculation Profiles")
-             vp_ui=calc_res_disp_ui.get("volume_profile",{})
-             ys_ui=calc_res_disp_ui.get("sorted_y_starts",np.array([]))
-             d_ui=calc_res_disp_ui.get("density",0)
-             csy_ui=calc_res_disp_ui.get("calc_start_y")
-             cey_ui=calc_res_disp_ui.get("calc_end_y")
+             vp_ui = calc_res_disp_ui.get("volume_profile", {})
+             ys_ui = calc_res_disp_ui.get("sorted_y_starts", np.array([]))
+             d_ui = calc_res_disp_ui.get("density", 0)
+             csy_ui = calc_res_disp_ui.get("calc_start_y")
+             cey_ui = calc_res_disp_ui.get("calc_end_y")
 
              if vp_ui and ys_ui.size > 0:
                  col_p1_ui, col_p2_ui = st.columns(2)
                  with col_p1_ui:
                      with st.spinner("Generating area plot..."):
-                         fig_area = plot_area_profile(vp_ui,ys_ui,st.session_state.slice_thickness,csy_ui,cey_ui)
-                         st.plotly_chart(fig_area, use_container_width=True, key="area_profile_static_chart")
+                         fig_area = plot_area_profile(vp_ui, ys_ui, st.session_state.slice_thickness, csy_ui, cey_ui)
+                         st.plotly_chart(fig_area, use_container_width=True, key="area_profile_static_chart_v2")
 
                  with col_p2_ui:
                      with st.spinner("Generating weight plot..."):
-                         st.plotly_chart(plot_cumulative_weight(vp_ui,ys_ui,d_ui,portions_disp_ui,st.session_state.target_weight,st.session_state.weight_tolerance,csy_ui,cey_ui),use_container_width=True)
+                         st.plotly_chart(plot_cumulative_weight(vp_ui, ys_ui, d_ui, portions_disp_ui, st.session_state.target_weight, st.session_state.weight_tolerance, csy_ui, cey_ui), use_container_width=True)
 
+                 st.markdown("---")
+                 st.subheader("🔬 Slice Profile Inspector")
+
+                 df_for_inspection = st.session_state.get('calculated_df_for_inspection')
+                 if df_for_inspection is not None and not df_for_inspection.empty:
+                     min_y_slider = float(ys_ui.min()) if ys_ui.size > 0 else 0.0
+                     max_y_slider = float(ys_ui.max()) if ys_ui.size > 0 else (min_y_slider + st.session_state.slice_thickness if ys_ui.size == 1 else min_y_slider + 1.0)
+                    
+                     if max_y_slider <= min_y_slider : max_y_slider = min_y_slider + st.session_state.slice_thickness
+                     
+                     default_y_slider_val = st.session_state.get('slice_inspector_slider', None)
+                     if default_y_slider_val is None or not (min_y_slider <= default_y_slider_val <= max_y_slider):
+                         default_y_slider_val = min_y_slider + (max_y_slider - min_y_slider) / 2.0
+
+
+                     slider_step = float(st.session_state.slice_thickness)
+                     if slider_step <= 0: slider_step = 0.1
+
+                     selected_y_for_slice = st.slider(
+                         "Select Y-coordinate to inspect slice profile (relative to calculation start):",
+                         min_value=min_y_slider,
+                         max_value=max_y_slider,
+                         value=default_y_slider_val,
+                         step=slider_step,
+                         format="%.2f mm",
+                         key="slice_inspector_slider_widget"
+                     )
+                     st.session_state.slice_inspector_slider = selected_y_for_slice
+
+                     if selected_y_for_slice is not None:
+                         st.write(f"**Showing XZ profile for slice starting at Y ≈ {selected_y_for_slice:.2f} mm**")
+                         
+                         y_slice_start_inspect = selected_y_for_slice
+                         y_slice_end_inspect = selected_y_for_slice + st.session_state.slice_thickness
+
+                         slice_df_inspector = df_for_inspection[
+                             (df_for_inspection['y'] >= y_slice_start_inspect - FLOAT_EPSILON) &
+                             (df_for_inspection['y'] < y_slice_end_inspect - FLOAT_EPSILON)
+                         ]
+
+                         if not slice_df_inspector.empty:
+                             slice_x_np_interactive = slice_df_inspector['x'].to_numpy()
+                             slice_z_np_interactive = slice_df_inspector['z'].to_numpy()
+                             
+                             eff_fb_interactive = st.session_state.flat_bottom or st.session_state.top_down_scan
+                             area_interactive, boundary_pts_interactive = calculate_slice_profile(
+                                 slice_x_np_interactive, slice_z_np_interactive,
+                                 eff_fb_interactive if not st.session_state.top_down_scan else False,
+                                 st.session_state.top_down_scan,
+                                 st.session_state.area_calculation_method,
+                                 st.session_state.alpha_shape_value
+                             )
+
+                             fig_slice_inspector = go.Figure()
+                             fig_slice_inspector.add_trace(go.Scatter(
+                                 x=slice_x_np_interactive, y=slice_z_np_interactive, mode='markers',
+                                 marker=dict(size=3, color='lightblue', opacity=0.7), name='Slice Points'
+                             ))
+                             if boundary_pts_interactive is not None and len(boundary_pts_interactive) > 0:
+                                 fig_slice_inspector.add_trace(go.Scatter(
+                                     x=boundary_pts_interactive[:,0], y=boundary_pts_interactive[:,1],
+                                     mode='lines', line=dict(color='red', width=2),
+                                     name=f'{st.session_state.area_calculation_method} Boundary'
+                                 ))
+                             title_detail_inspector = f"(Est. Area: {area_interactive:.1f} mm²)"
+                             fig_slice_inspector.update_layout(
+                                 title=f"XZ Cross-Section @ Y ≈ {selected_y_for_slice:.1f}mm {title_detail_inspector}",
+                                 xaxis_title="Width (X, mm)", yaxis_title="Height (Z, mm)",
+                                 width=500, height=450,
+                                 xaxis=dict(scaleanchor="y", scaleratio=1, constrain='domain'),
+                                 yaxis=dict(scaleanchor="x", scaleratio=1, constrain='domain'),
+                                 legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+                             )
+                             st.plotly_chart(fig_slice_inspector, use_container_width=False)
+                         else:
+                             st.info(f"No points found in the slice interval Y=[{y_slice_start_inspect:.2f}, {y_slice_end_inspect:.2f}) mm for inspection.")
+                 else:
+                     st.info("Run a calculation to enable the slice inspector.")
              else:
-                 st.warning("Not enough data for 2D plots. Run calculation first.")
+                 st.warning("Not enough data for 2D plots or slice inspection. Run calculation first.")
+
     elif not portions_disp_ui and "Err:" not in stat_msg_ui and "Warning:" not in stat_msg_ui:
          st.warning("Calculation ran but resulted in 0 portions. Check parameters, trims, and cloud quality.")
 elif not calc_button_main_ui and st.session_state.get('point_cloud_data') is not None :
