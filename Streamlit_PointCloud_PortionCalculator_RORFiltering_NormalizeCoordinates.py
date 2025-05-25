@@ -59,7 +59,6 @@ DEFAULT_ALPHA_SHAPE_VALUE = 0.02
 
 # --- Point Cloud Generation ---
 
-
 def generate_test_point_cloud(
     base_length=NOMINAL_LENGTH, base_width=NOMINAL_WIDTH, base_height=NOMINAL_HEIGHT,
     resolution=DEFAULT_RESOLUTION, noise_factor=0.03, waviness_factor=0.05, seed=None
@@ -112,7 +111,6 @@ def generate_test_point_cloud(
     return pd.DataFrame(pts_arr, columns=['x', 'y', 'z'])
 
 # --- Point Cloud Loading ---
-
 
 def load_point_cloud(uploaded_file):
     if uploaded_file is None:
@@ -276,6 +274,8 @@ def calculate_slice_profile(
 ):
     area = 0.0
     boundary_points_plot = None
+    original_point_count_in_slice = len(slice_x_np)
+    downsampled_point_count_in_slice = original_point_count_in_slice
 
     if top_down:
         if len(slice_x_np) >= 2:
@@ -289,45 +289,47 @@ def calculate_slice_profile(
                     [sl_min_x, 0], [sl_max_x, 0], [sl_max_x, mean_z_height], [
                         sl_min_x, mean_z_height], [sl_min_x, 0]
                 ])
-        return area, boundary_points_plot
+        return area, boundary_points_plot, original_point_count_in_slice, downsampled_point_count_in_slice
 
     current_slice_points_2d = np.column_stack((slice_x_np, slice_z_np))
     if flat_bottom and len(slice_x_np) > 0:
-        sl_min_x_orig, sl_max_x_orig = slice_x_np.min(), slice_x_np.max()
-        current_slice_points_2d = np.vstack((current_slice_points_2d,
-                                             [[sl_min_x_orig, 0.0], [sl_max_x_orig, 0.0]]))
+        original_point_count_in_slice = len(current_slice_points_2d)
+        downsampled_point_count_in_slice = original_point_count_in_slice
 
     if len(current_slice_points_2d) < 3:
-        return 0.0, None
+        return 0.0, None, original_point_count_in_slice, downsampled_point_count_in_slice
+
+    points_for_processing = current_slice_points_2d
 
     if area_method == "Alpha Shape":
-        points_for_alphashape_calc = current_slice_points_2d
         voxel_size = st.session_state.get(
             'alphashape_slice_voxel', alphashape_slice_voxel_size)
-        if _open3d_installed and voxel_size and voxel_size > 0 and len(current_slice_points_2d) > 50:
+
+        if _open3d_installed and voxel_size and voxel_size > 0 and len(points_for_processing) > 50:
             try:
-                # print(f"DEBUG: AlphaShape - Before slice downsample: {len(current_slice_points_2d)} pts") # For debug
                 temp_pcd_3d = o3d.geometry.PointCloud()
                 temp_pcd_3d.points = o3d.utility.Vector3dVector(
-                    np.hstack((current_slice_points_2d, np.zeros(
-                        (len(current_slice_points_2d), 1))))
+                    np.hstack((points_for_processing, np.zeros(
+                        (len(points_for_processing), 1))))
                 )
                 downsampled_pcd = temp_pcd_3d.voxel_down_sample(voxel_size)
                 if downsampled_pcd.has_points():
-                    points_for_alphashape_calc = np.asarray(
-                        downsampled_pcd.points)[:, :2]
-                    # print(f"DEBUG: AlphaShape - After slice downsample: {len(points_for_alphashape_calc)} pts")
+                    points_for_processing = np.asarray(downsampled_pcd.points)[
+                        :, :2]
+                    downsampled_point_count_in_slice = len(
+                        points_for_processing)
             except Exception as e_ds:
                 st.sidebar.warning(f"Slice downsample error: {e_ds}")
                 pass
 
-        if len(points_for_alphashape_calc) < 3:
+        if len(points_for_processing) < 3:
             area = 0.0
             boundary_points_plot = None
         else:
             try:
                 alpha_polygon_raw = alphashape.alphashape(
-                    points_for_alphashape_calc, alpha_value)
+                    points_for_processing, alpha_value)
+
                 final_polygon_for_area = None
                 if isinstance(alpha_polygon_raw, Polygon):
                     final_polygon_for_area = alpha_polygon_raw
@@ -349,14 +351,16 @@ def calculate_slice_profile(
                             (x_coords, z_coords))
                 if not (np.isfinite(area) and area >= 0):
                     area = 0.0
+
             except Exception as e_alpha:
                 area = 0.0
                 boundary_points_plot = None
+
     elif area_method == "Convex Hull":
         try:
-            hull = ConvexHull(current_slice_points_2d)
+            hull = ConvexHull(points_for_processing)
             area = hull.volume
-            boundary_points_plot = current_slice_points_2d[hull.vertices]
+            boundary_points_plot = points_for_processing[hull.vertices]
             boundary_points_plot = np.vstack(
                 (boundary_points_plot, boundary_points_plot[0]))
             if not (np.isfinite(area) and area >= 0):
@@ -373,16 +377,22 @@ def calculate_slice_profile(
             eff_max_z = current_slice_points_2d[:, 1].max()
             width_for_area = eff_max_x - eff_min_x
             height_for_area = eff_max_z - eff_min_z
-            area = max(0.0, width_for_area) * max(0.0, height_for_area)
-            if area > 0:
-                boundary_points_plot = np.array([
-                    [eff_min_x, eff_min_z], [eff_max_x, eff_min_z],
-                    [eff_max_x, eff_max_z], [eff_min_x, eff_max_z],
-                    [eff_min_x, eff_min_z]
-                ])
+            # Only use this if it's meaningful
+            if width_for_area > FLOAT_EPSILON and height_for_area > FLOAT_EPSILON:
+                area = width_for_area * height_for_area
+                if area > 0:
+                    boundary_points_plot = np.array([
+                        [eff_min_x, eff_min_z], [eff_max_x, eff_min_z],
+                        [eff_max_x, eff_max_z], [eff_min_x, eff_max_z],
+                        [eff_min_x, eff_min_z]
+                    ])
+            else:
+                area = 0.0
+
     if not (np.isfinite(area) and area >= 0):
         area = 0.0
-    return area, boundary_points_plot
+
+    return area, boundary_points_plot, original_point_count_in_slice, downsampled_point_count_in_slice
 
 
 def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y):
@@ -485,10 +495,12 @@ def calculate_cut_portions_reversed(
             if start_idx < end_idx:
                 slice_x_for_profile = x_coords_np[start_idx:end_idx]
                 slice_z_for_profile = z_coords_np[start_idx:end_idx]
-                sl_area, _ = calculate_slice_profile(
+                sl_area, _, _, _ = calculate_slice_profile(
                     slice_x_for_profile, slice_z_for_profile,
                     flat_bottom if not top_down else False,
-                    top_down, area_calc_method, alpha_shape_param
+                    top_down, area_calc_method, alpha_shape_param,
+                    alphashape_slice_voxel_size=st.session_state.get(
+                        'alphashape_slice_voxel', DEFAULT_ALPHA_SHAPE_VALUE)
                 )
             slice_actual_length = max(0.0, y_e_loop - y_s_loop)
             sl_vol = sl_area * slice_actual_length
@@ -994,7 +1006,6 @@ with st.sidebar:
             )
 
             st.number_input(
-                # Default to 0.5mm
                 "AlphaShape Slice Voxel Size (mm, 0=disable)", min_value=0.0, value=0.5,
                 key="alphashape_slice_voxel", step=0.1, format="%.2f",
                 help="Downsamples points within each 2D slice before AlphaShape calculation for speed. 0 to disable. Try 0.5-2.0mm."
@@ -1545,30 +1556,29 @@ if calc_res_disp_ui:
 
                     if max_y_slider <= min_y_slider + FLOAT_EPSILON:
                         max_y_slider = min_y_slider + st.session_state.slice_thickness
-
                         if max_y_slider <= min_y_slider + FLOAT_EPSILON:
                             max_y_slider = min_y_slider + \
                                 max(st.session_state.slice_thickness, 0.1)
 
-                    slider_step = float(st.session_state.slice_thickness)
-                    if slider_step <= 0:
-                        slider_step = 0.1
-
                     slider_widget_key = "slice_inspector_slider_widget"
-
                     current_slider_value = st.session_state.get(
                         slider_widget_key, None)
+                    calc_results_id = id(calc_res_disp_ui)
 
                     if current_slider_value is None or \
                        not (min_y_slider <= current_slider_value <= max_y_slider) or \
-                       (st.session_state.get('calc_results_id_for_slider_reset') != id(calc_res_disp_ui)):
+                       (st.session_state.get('calc_results_id_for_slider_reset') != calc_results_id):
+
                         initial_slider_value = min_y_slider + \
                             (max_y_slider - min_y_slider) / 2.0
                         initial_slider_value = max(min_y_slider, min(
                             initial_slider_value, max_y_slider))
                         st.session_state[slider_widget_key] = initial_slider_value
-                        st.session_state['calc_results_id_for_slider_reset'] = id(
-                            calc_res_disp_ui)
+                        st.session_state['calc_results_id_for_slider_reset'] = calc_results_id
+
+                    slider_step = float(st.session_state.slice_thickness)
+                    if slider_step <= 0:
+                        slider_step = 0.1
 
                     selected_y_for_slice = st.slider(
                         "Select Y-coordinate to inspect slice profile (relative to calculation start):",
@@ -1578,8 +1588,6 @@ if calc_res_disp_ui:
                         format="%.2f mm",
                         key=slider_widget_key
                     )
-
-                    st.session_state.slice_inspector_slider = selected_y_for_slice
 
                     if selected_y_for_slice is not None:
                         st.write(
@@ -1601,37 +1609,70 @@ if calc_res_disp_ui:
                             )
 
                             eff_fb_interactive = st.session_state.flat_bottom or st.session_state.top_down_scan
-                            area_interactive, boundary_pts_interactive = calculate_slice_profile(
-                                slice_x_np_interactive, slice_z_np_interactive,
-                                eff_fb_interactive if not st.session_state.top_down_scan else False,
-                                st.session_state.top_down_scan,
-                                st.session_state.area_calculation_method,
-                                st.session_state.alpha_shape_value
-                            )
+
+                            area_interactive, boundary_pts_interactive, \
+                                original_pts_in_slice_inspector, pts_after_ds_in_slice_inspector = calculate_slice_profile(
+                                    slice_x_np_interactive, slice_z_np_interactive,
+                                    eff_fb_interactive if not st.session_state.top_down_scan else False,
+                                    st.session_state.top_down_scan,
+                                    st.session_state.area_calculation_method,
+                                    st.session_state.alpha_shape_value,
+                                    alphashape_slice_voxel_size=st.session_state.get(
+                                        'alphashape_slice_voxel', DEFAULT_ALPHA_SHAPE_VALUE)
+                                )
 
                             fig_slice_inspector = go.Figure()
                             fig_slice_inspector.add_trace(go.Scatter(
                                 x=slice_x_np_interactive, y=slice_z_np_interactive, mode='markers',
-                                marker=dict(size=3, color='lightblue', opacity=0.7), name='Slice Points'
+                                marker=dict(
+                                    size=3, color='lightblue', opacity=0.7),
+                                name=f'Slice Pts ({original_pts_in_slice_inspector})'
                             ))
+
                             if boundary_pts_interactive is not None and len(boundary_pts_interactive) > 0:
+                                boundary_method_label = f'{st.session_state.area_calculation_method} Boundary'
+                                if st.session_state.area_calculation_method == "Alpha Shape" and \
+                                   st.session_state.get('alphashape_slice_voxel', 0) > 0 and \
+                                   pts_after_ds_in_slice_inspector < original_pts_in_slice_inspector:
+                                    boundary_method_label += f' (on {pts_after_ds_in_slice_inspector} DS pts)'
+
                                 fig_slice_inspector.add_trace(go.Scatter(
                                     x=boundary_pts_interactive[:,
                                                                0], y=boundary_pts_interactive[:, 1],
                                     mode='lines', line=dict(color='red', width=2),
-                                    name=f'{st.session_state.area_calculation_method} Boundary'
+                                    name=boundary_method_label
                                 ))
+
                             title_detail_inspector = f"(Est. Area: {area_interactive:.1f} mm²)"
+
+                            point_info_str_list = [
+                                f"Orig. Pts in Slice: {original_pts_in_slice_inspector}"]
+                            if st.session_state.area_calculation_method == "Alpha Shape" and \
+                               st.session_state.get('alphashape_slice_voxel', 0) > 0 and \
+                               pts_after_ds_in_slice_inspector < original_pts_in_slice_inspector:
+                                point_info_str_list.append(
+                                    f"Pts for Alpha Calc: {pts_after_ds_in_slice_inspector}")
+
+                            st.caption(" | ".join(point_info_str_list))
+
                             fig_slice_inspector.update_layout(
                                 title=f"XZ Cross-Section @ Y ≈ {selected_y_for_slice:.1f}mm {title_detail_inspector}",
                                 xaxis_title="Width (X, mm)", yaxis_title="Height (Z, mm)",
-                                width=500, height=450,
+                                width=500,
+                                height=500,
                                 xaxis=dict(scaleanchor="y",
                                            scaleratio=1, constrain='domain'),
                                 yaxis=dict(scaleanchor="x",
                                            scaleratio=1, constrain='domain'),
-                                legend=dict(yanchor="top", y=0.99,
-                                            xanchor="left", x=0.01)
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="bottom",
+                                    y=1.02,
+                                    xanchor="center",
+                                    x=0.5,
+                                    bgcolor='rgba(255,255,255,0.7)'
+                                ),
+                                margin=dict(l=20, r=20, b=20, t=90)
                             )
                             st.plotly_chart(fig_slice_inspector,
                                             use_container_width=False)
