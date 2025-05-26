@@ -59,6 +59,7 @@ DEFAULT_ALPHA_SHAPE_VALUE = 0.02
 
 # --- Point Cloud Generation ---
 
+
 def generate_test_point_cloud(
     base_length=NOMINAL_LENGTH, base_width=NOMINAL_WIDTH, base_height=NOMINAL_HEIGHT,
     resolution=DEFAULT_RESOLUTION, noise_factor=0.03, waviness_factor=0.05, seed=None
@@ -111,6 +112,7 @@ def generate_test_point_cloud(
     return pd.DataFrame(pts_arr, columns=['x', 'y', 'z'])
 
 # --- Point Cloud Loading ---
+
 
 def load_point_cloud(uploaded_file):
     if uploaded_file is None:
@@ -895,6 +897,7 @@ default_persistent_states = {
     'calculated_df_for_inspection': None,
     'slice_inspector_slider': None,
     'alphashape_slice_voxel': 0.5,
+    'point_cloud_data_before_ror': None,
 }
 for key_init, value_init in default_persistent_states.items():
     if key_init not in st.session_state:
@@ -916,8 +919,8 @@ def update_area_calculation_defaults():
 
 with st.sidebar:
     st.header("🔪 Parameters")
-    st.subheader("1. Data Source")
-    data_source_options = ("Generate Test Data", "Upload File")
+    st.subheader("1. 📂 Data Source")
+    data_source_options = ("Generate Test Data", "Upload File", "Automatic")
     try:
         default_ds_index = data_source_options.index(
             st.session_state.data_source)
@@ -934,30 +937,42 @@ with st.sidebar:
         if not _open3d_installed and any(ft in ['pcd', 'ply'] for ft in file_types_sb_main):
             st.caption("Install `open3d` for .pcd/.ply.")
         st.caption("Excel: 'x','y','z' cols on 1st sheet.")
+    elif st.session_state.data_source == "Automatic":
+        st.caption(
+            "🤖 Automatic transfer of point cloud file via wrapper script or TCP/IP.")
     else:
-        st.caption("_(Using generated test data)_")
+        st.caption("✨ Using generated test data.")
 
-    if st.session_state.point_cloud_data is not None and not st.session_state.point_cloud_data.empty and _open3d_installed and st.session_state.data_source == "Upload File" and uploaded_file_sb is not None:
-        st.subheader("Convert & Download Current Cloud")
-        if st.button("Download as Binary PLY"):
-            with st.spinner("Preparing Binary PLY download..."):
-                try:
-                    o3d_pcd_to_save = o3d.geometry.PointCloud()
-                    o3d_pcd_to_save.points = o3d.utility.Vector3dVector(
-                        st.session_state.point_cloud_data[['x', 'y', 'z']].values)
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".ply") as tmp_ply:
-                        o3d.io.write_point_cloud(
-                            tmp_ply.name, o3d_pcd_to_save, write_ascii=False)
-                        tmp_ply_path = tmp_ply.name
-                    with open(tmp_ply_path, "rb") as fp:
-                        st.download_button(label="Click to Download Binary PLY", data=fp,
-                                           file_name="converted_cloud.ply", mime="application/octet-stream")
-                    if os.path.exists(tmp_ply_path):
-                        os.remove(tmp_ply_path)
-                except Exception as e_ply_save:
-                    st.error(f"Error creating PLY: {e_ply_save}")
+    if st.session_state.point_cloud_data is not None and \
+       not st.session_state.point_cloud_data.empty and \
+       _open3d_installed:
+        with st.expander("📥 Convert & Download Cloud"):
+            if st.button("Download as Binary PLY", key="download_ply_btn"):
+                with st.spinner("Preparing Binary PLY download..."):
+                    try:
+                        o3d_pcd_to_save = o3d.geometry.PointCloud()
+                        o3d_pcd_to_save.points = o3d.utility.Vector3dVector(
+                            st.session_state.point_cloud_data[['x', 'y', 'z']].values)
 
-    st.subheader("2. Weight & Density Settings")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ply") as tmp_ply:
+                            o3d.io.write_point_cloud(
+                                tmp_ply.name, o3d_pcd_to_save, write_ascii=False)
+                            tmp_ply_path = tmp_ply.name
+
+                        with open(tmp_ply_path, "rb") as fp_ply:
+                            st.download_button(
+                                label="Click to Download PLY",
+                                data=fp_ply,
+                                file_name="converted_cloud.ply",
+                                mime="application/octet-stream"
+                            )
+                        if os.path.exists(tmp_ply_path):
+                            os.remove(tmp_ply_path)
+                    except Exception as e_ply_save:
+                        st.error(
+                            f"Error creating PLY for download: {e_ply_save}")
+
+    st.subheader("2. ⚖️ Weight & Density")
     st.radio("Density Source:", options=["Calculate from Total Weight & Volume", "Input Density Directly"],
              key="density_source", horizontal=True, on_change=update_density_defaults)
     if st.session_state.density_source == "Calculate from Total Weight & Volume":
@@ -973,7 +988,7 @@ with st.sidebar:
     st.number_input("Target Wt Tolerance (+/- g)", min_value=0.0,
                     key="weight_tolerance", step=0.5, format="%.1f")
 
-    st.subheader("3. Calculation Settings")
+    st.subheader("3. ⚙️ Calculation Settings")
     st.toggle(
         "Cut Portions Always Equal Or Greater Than Target Weight (No Interpolation)", key="no_interp")
     st.slider("Calc. Slice Thickness (mm)", 0.1, 10.0,
@@ -985,16 +1000,10 @@ with st.sidebar:
     st.number_input("Blade Thickness / Kerf (mm)", 0.0,
                     key="blade_thickness", step=0.1, format="%.1f")
 
-    st.subheader("4. Advanced & Simulation")
-    st.caption(
-        "Profile scan type (e.g. 4 profilers) presumed unless specific options below are checked.")
-    st.toggle("Top-Down Only (1 Profiler)", key="top_down_scan")
-    st.toggle("Top & Side Only (2 Profilers - Assumes Flat Bottom)",
-              key="flat_bottom", disabled=st.session_state.top_down_scan)
-
+    st.subheader("4. 🧠 Cross-Section Area Method")
     st.radio(
-        "Cross-Section Area Method:", options=["Convex Hull", "Alpha Shape"], key="area_calculation_method", horizontal=True,
-        help="Method for area. Alpha Shape (concave) can be more accurate but needs Open3D & tuning.",
+        "Cross-Section Area Algorithm Method:", options=["Convex Hull", "Alpha Shape"], key="area_calculation_method", horizontal=True,
+        help="Method for area. Alpha Shape (handles concave & convex points) can be more accurate but is slower. Needs Open3D & tuning.",
         on_change=update_area_calculation_defaults
     )
     if st.session_state.area_calculation_method == "Alpha Shape":
@@ -1010,39 +1019,67 @@ with st.sidebar:
                 key="alphashape_slice_voxel", step=0.1, format="%.2f",
                 help="Downsamples points within each 2D slice before AlphaShape calculation for speed. 0 to disable. Try 0.5-2.0mm."
             )
+        else:
+            st.warning(
+                "Alpha Shape method requires Open3D library, which is not installed. Please choose Convex Hull or install Open3D.")
 
-    st.number_input("Voxel Downsample Size (mm)", 0.0,
-                    key="voxel_size", step=0.25, format="%.2f")
-    if st.session_state.voxel_size > 0 and not _open3d_installed:
-        st.warning("Voxel downsampling needs `open3d`.")
-    st.checkbox("Enable Auto-Downsample", key="enable_auto_downsample")
-    st.number_input("Auto-Downsample Threshold (points)", min_value=50000, max_value=5000000, step=50000,
-                    key="auto_downsample_threshold", disabled=not st.session_state.enable_auto_downsample)
-    st.checkbox("Normalize Y-coords Before Calculation",
-                key="enable_y_normalization")
-    st.number_input("Generated Test Data Cloud Resolution (mm)",
-                    0.01, key="resolution", step=0.1, format="%.2f")
+    st.subheader("5. 🛠️ Advanced & Simulation")
+    st.caption(
+        "Profile scan type. Complete xyz presumed unless specific options below are checked.")
+    st.toggle("Top-Down Only (1 Profiler)", key="top_down_scan")
+    st.toggle("Top & Side Only (2 Profilers - Assumes Flat Product Bottom)",
+              key="flat_bottom", disabled=st.session_state.top_down_scan)
 
-    st.subheader("5. Point Cloud Filtering (Optional)")
-    st.caption("Applied after loading & downsampling. Requires 'open3d'.")
+    with st.expander("Preprocessing & Global Downsampling"):
+        st.number_input("Global Voxel Downsample Size (mm, 0=disable)", 0.0,
+                        key="voxel_size", step=0.25, format="%.2f",
+                        help="Applies to the entire point cloud after loading. Requires Open3D. 0 to disable.")
+        if st.session_state.voxel_size > 0 and not _open3d_installed:
+            st.warning("Voxel downsampling requires `open3d`.")
+
+        st.checkbox("Enable Auto-Downsample (Random)", key="enable_auto_downsample",
+                    help="If point count exceeds threshold, randomly downsamples the cloud. Requires Open3D.")
+        st.number_input("Auto-Downsample Threshold (points)",
+                        min_value=50000, max_value=5000000, step=50000,
+                        key="auto_downsample_threshold",
+                        disabled=not st.session_state.enable_auto_downsample)
+
+        st.checkbox("Normalize Y-coords Before Calculation",
+                    key="enable_y_normalization",
+                    help="Shifts Y-coordinates so the loaf starts at Y=0 for calculation. Original Y offset is tracked.")
+
+    if st.session_state.data_source == "Generate Test Data":
+        st.number_input("Auto Generated Test Cloud Resolution (mm)",
+                        min_value=0.01,
+                        key="resolution",
+                        step=0.1, format="%.2f")
+        st.caption(
+            "Resolution affects point density. Lower = denser cloud. Higher = sparser cloud.")
+
+    st.subheader("6. 🧹 Point Cloud Filtering (Optional)")
+    st.caption(
+        "Radius Outlier Removal (ROR) helps clean point clouds by removing points that are too sparse in their local neighborhood.")
     with st.expander("Radius Outlier Removal (ROR)", expanded=False):
         if not _open3d_installed:
-            st.warning("ROR requires `open3d`.")
+            st.warning("ROR requires `open3d` library, which is not installed.")
         else:
-            st.slider("ROR: Min pts in radius", 1, 100, key="ror_nb_points")
+            st.slider("ROR: Min points in radius", 1, 100, key="ror_nb_points")
+
             ror_c1, ror_c2 = st.columns(2)
             with ror_c1:
-                st.slider("k for est.", 1, 50, key="ror_k_radius_est")
+                st.slider("k for radius est.", 1, 50, key="ror_k_radius_est",
+                          help="Number of neighbors for k-NN distance estimation.")
             with ror_c2:
-                st.slider("Radius mult.", 0.1, 10.0,
-                          key="ror_radius_mult_est", step=0.1)
+                st.slider("Radius multiplier for est.", 0.1, 10.0, key="ror_radius_mult_est",
+                          step=0.1, help="Multiplier for avg k-NN distance.")
+
             if st.button("Estimate ROR Radius", use_container_width=True, key="ror_est_btn_widget"):
                 if st.session_state.point_cloud_data is not None and not st.session_state.point_cloud_data.empty:
                     pcd_est_ror = o3d.geometry.PointCloud()
                     pcd_est_ror.points = o3d.utility.Vector3dVector(
                         st.session_state.point_cloud_data[['x', 'y', 'z']].values)
                     if not pcd_est_ror.has_points():
-                        st.session_state.ror_estimated_radius_msg = "Cloud empty."
+                        st.session_state.ror_estimated_radius_msg = "Cloud is empty."
                     else:
                         est_r, msg_r = estimate_ror_radius_util_o3d(
                             pcd_est_ror, st.session_state.ror_k_radius_est, st.session_state.ror_radius_mult_est)
@@ -1051,47 +1088,77 @@ with st.sidebar:
                             st.session_state.ror_radius_val = float(
                                 f"{est_r:.4f}")
                 else:
-                    st.session_state.ror_estimated_radius_msg = "Load cloud first."
+                    st.session_state.ror_estimated_radius_msg = "Load or generate a point cloud first."
+
             if st.session_state.ror_estimated_radius_msg:
-                st.caption(st.session_state.ror_estimated_radius_msg)
-            st.number_input("ROR: Search Radius (mm)", 0.0001,
+                st.caption(f"💡 {st.session_state.ror_estimated_radius_msg}")
+
+            st.number_input("ROR: Search Radius (mm)", min_value=0.0001,
                             key="ror_radius_val", step=0.001, format="%.4f")
-            if st.button("Apply ROR Filter", type="secondary", use_container_width=True, key="ror_apply_btn_widget"):
-                if st.session_state.point_cloud_data is not None and not st.session_state.point_cloud_data.empty:
-                    if st.session_state.ror_radius_val > 0:
-                        try:
-                            pcd_apply_ror = o3d.geometry.PointCloud()
-                            pcd_apply_ror.points = o3d.utility.Vector3dVector(
-                                st.session_state.point_cloud_data[['x', 'y', 'z']].values)
-                            if not pcd_apply_ror.has_points():
-                                st.warning("ROR: Cloud empty.")
-                            else:
-                                n_b = len(pcd_apply_ror.points)
-                                _, ind_apply = pcd_apply_ror.remove_radius_outlier(
-                                    st.session_state.ror_nb_points, st.session_state.ror_radius_val)
-                                pcd_filt = pcd_apply_ror.select_by_index(
-                                    ind_apply)
-                                n_a = len(pcd_filt.points)
-                                n_rem = n_b - n_a
-                                st.session_state.point_cloud_data = pd.DataFrame(
-                                    np.asarray(pcd_filt.points), columns=['x', 'y', 'z'])
-                                st.session_state.ror_filter_applied_msg = (
-                                    f"ROR: Removed {n_rem} pts. Now: {n_a:,}.")
-                                st.session_state.ror_applied_cloud_id = st.session_state.last_file_id if st.session_state.last_file_id else "generated_data"
-                                st.toast(
-                                    st.session_state.ror_filter_applied_msg, icon="🧹")
-                                st.session_state.calc_results = None
-                                st.rerun()
-                        except Exception as e_ror_app:
-                            st.error(f"ROR Error: {e_ror_app}")
-                            st.session_state.ror_filter_applied_msg = f"ROR Error: {e_ror_app}"
+
+            col_apply_ror, col_undo_ror = st.columns(2)
+            with col_apply_ror:
+                if st.button("Apply ROR Filter", type="secondary", use_container_width=True, key="ror_apply_btn_widget"):
+                    if st.session_state.point_cloud_data is not None and not st.session_state.point_cloud_data.empty:
+                        if st.session_state.ror_radius_val > 0:
+                            try:
+
+                                st.session_state.point_cloud_data_before_ror = st.session_state.point_cloud_data.copy()
+
+                                pcd_apply_ror = o3d.geometry.PointCloud()
+                                pcd_apply_ror.points = o3d.utility.Vector3dVector(
+                                    st.session_state.point_cloud_data[['x', 'y', 'z']].values)
+
+                                if not pcd_apply_ror.has_points():
+                                    st.warning("ROR: Cloud is empty.")
+                                else:
+                                    n_b = len(pcd_apply_ror.points)
+
+                                    pcd_filt, ind_apply = pcd_apply_ror.remove_radius_outlier(
+                                        nb_points=st.session_state.ror_nb_points,
+                                        radius=st.session_state.ror_radius_val
+                                    )
+                                    n_a = len(pcd_filt.points)
+                                    n_rem = n_b - n_a
+
+                                    st.session_state.point_cloud_data = pd.DataFrame(
+                                        np.asarray(pcd_filt.points), columns=['x', 'y', 'z'])
+                                    st.session_state.ror_filter_applied_msg = (
+                                        f"ROR Applied: Removed {n_rem} points. Cloud now has {n_a:,} points.")
+                                    st.session_state.ror_applied_cloud_id = st.session_state.last_file_id if st.session_state.last_file_id else "generated_data"
+                                    st.toast(
+                                        st.session_state.ror_filter_applied_msg, icon="🧹")
+                                    st.session_state.calc_results = None
+                                    st.rerun()
+                            except Exception as e_ror_app:
+                                st.error(f"ROR Filter Error: {e_ror_app}")
+                                st.session_state.ror_filter_applied_msg = f"ROR Error: {e_ror_app}"
+                        else:
+                            st.warning(
+                                "ROR search radius must be greater than 0.")
                     else:
-                        st.warning("ROR radius > 0.")
-                else:
-                    st.warning("Load cloud first for ROR.")
-        curr_cloud_id = st.session_state.last_file_id if st.session_state.last_file_id else "generated_data"
-        if st.session_state.ror_filter_applied_msg and st.session_state.ror_applied_cloud_id == curr_cloud_id:
+                        st.warning(
+                            "Load or generate a point cloud first to apply ROR.")
+            with col_undo_ror:
+                if st.button("Undo Last ROR", use_container_width=True, key="ror_undo_btn_widget",
+                             disabled=(st.session_state.point_cloud_data_before_ror is None)):
+                    if st.session_state.point_cloud_data_before_ror is not None:
+                        st.session_state.point_cloud_data = st.session_state.point_cloud_data_before_ror.copy()
+                        st.session_state.point_cloud_data_before_ror = None
+                        st.session_state.ror_filter_applied_msg = "ROR filter undone."
+                        st.toast("ROR filter undone.", icon="↩️")
+                        st.session_state.calc_results = None
+                        st.rerun()
+                    else:
+                        st.info("No ROR filter application to undo.")
+
+        curr_cloud_id_for_ror_msg = st.session_state.last_file_id if st.session_state.last_file_id else "generated_data"
+        if st.session_state.ror_filter_applied_msg and \
+           st.session_state.ror_applied_cloud_id == curr_cloud_id_for_ror_msg:
             st.success(st.session_state.ror_filter_applied_msg)
+
+        st.caption(
+            "Applied to the current cloud. Requires 'Open3D'. Can be undone.")
     st.divider()
     calc_button_main_ui = st.button(
         "Calculate Portions", type="primary", use_container_width=True)
@@ -1184,7 +1251,8 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
                 st.video(video_file.read())
                 video_file.close()
             else:
-                st.caption(f"Video not found at specified path.")
+                st.video(
+                    "https://www.youtube.com/watch?v=BTgjXwhoMuI&list=FLYL3nsDC4Qle3CQb4LlzL3g&ab_channel=MrYetAnotherAccount")
         except Exception as e_vid:
             st.error(f"Error loading video: {e_vid}")
 
@@ -1211,6 +1279,8 @@ if refresh_data_flag_main_ui:
     st.session_state.ror_applied_cloud_id = None
     st.session_state.ror_estimated_radius_msg = None
     st.session_state.calculated_df_for_inspection = None
+    st.session_state.point_cloud_data_before_ror = None
+    st.session_state.point_cloud_data = None
     temp_df_load_main_ui = None
     current_step = 0
     total_steps = 1
