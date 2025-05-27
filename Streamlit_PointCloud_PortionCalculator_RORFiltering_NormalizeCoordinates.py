@@ -650,6 +650,7 @@ def plot_3d_loaf(points_df, portions=None, title="Point Cloud", y_offset=0.0, ca
         ),
         name='Point Cloud'
     ))
+
     if portions and len(portions) > 0:
         min_x_plot, max_x_plot = points_df['x'].min(), points_df['x'].max()
         x_rng_plot = max(1.0, max_x_plot - min_x_plot)
