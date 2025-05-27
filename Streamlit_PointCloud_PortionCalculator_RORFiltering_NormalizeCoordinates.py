@@ -379,7 +379,6 @@ def calculate_slice_profile(
             eff_max_z = current_slice_points_2d[:, 1].max()
             width_for_area = eff_max_x - eff_min_x
             height_for_area = eff_max_z - eff_min_z
-            # Only use this if it's meaningful
             if width_for_area > FLOAT_EPSILON and height_for_area > FLOAT_EPSILON:
                 area = width_for_area * height_for_area
                 if area > 0:
@@ -634,37 +633,45 @@ def calculate_cut_portions_reversed(
     return res
 
 
-def plot_3d_loaf(points_df, portions=None, title="Point Cloud", y_offset=0.0, camera_override=None):
+def plot_3d_loaf(points_df, portions=None, title="Point Cloud", y_offset=0.0, camera_override=None, selected_colorscale='YlOrBr'):
     if points_df is None or points_df.empty:
         return go.Figure()
     fig = go.Figure()
-    fig.add_trace(go.Scatter3d(x=points_df['x'], y=points_df['y'], z=points_df['z'], mode='markers',
-                               marker=dict(size=1.5, color=points_df['z'], colorscale='YlOrBr', opacity=0.7,
-                                           colorbar=dict(title='Height (Z)')), name='Point Cloud'))
+
+    fig.add_trace(go.Scatter3d(
+        x=points_df['x'], y=points_df['y'], z=points_df['z'],
+        mode='markers',
+        marker=dict(
+            size=1.5,
+            color=points_df['z'],
+            colorscale=selected_colorscale,
+            opacity=0.7,
+            colorbar=dict(title='Height (Z)')
+        ),
+        name='Point Cloud'
+    ))
     if portions and len(portions) > 0:
         min_x_plot, max_x_plot = points_df['x'].min(), points_df['x'].max()
         x_rng_plot = max(1.0, max_x_plot - min_x_plot)
         min_z_plot, max_z_plot = points_df['z'].min(), points_df['z'].max()
         z_rng_plot = max(1.0, max_z_plot - min_z_plot)
-        plane_x_coords = [min_x_plot - 0.05 *
-                          x_rng_plot, max_x_plot + 0.05 * x_rng_plot]
-        plane_z_coords = [min_z_plot - 0.05 *
-                          z_rng_plot, max_z_plot + 0.05 * z_rng_plot]
-        cut_y_locations_to_plot = []
-        for i, p in enumerate(portions):
-            if i < len(portions) - 1:
-                cut_y_val_for_plot = p.get('display_end_y', np.nan) + y_offset
-                if np.isfinite(cut_y_val_for_plot):
-                    cut_y_locations_to_plot.append(cut_y_val_for_plot)
-        for i, cut_y_loc in enumerate(cut_y_locations_to_plot):
-            fig.add_trace(go.Mesh3d(
-                x=[plane_x_coords[0], plane_x_coords[1],
-                    plane_x_coords[1], plane_x_coords[0]], y=[cut_y_loc]*4,
-                z=[plane_z_coords[0], plane_z_coords[0],
-                   plane_z_coords[1], plane_z_coords[1]],
-                opacity=0.4, color='red', alphahull=0, name=f"Cut {i+1} (Y={cut_y_loc:.1f})", showlegend=(i < 3)))
-    fig.update_layout(title=title, scene=dict(xaxis_title='Width (X,mm)', yaxis_title='Length (Y,mm)',
-                      zaxis_title='Height (Z,mm)', aspectmode='data'), margin=dict(l=0, r=0, b=0, t=40))
+
+        fig.update_layout(
+            title=title,
+            scene=dict(
+                xaxis_title='Width (X,mm)',
+                yaxis_title='Length (Y,mm)',
+                zaxis_title='Height (Z,mm)',
+                aspectmode='data'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40),
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            )
+        )
     return fig
 
 
@@ -903,6 +910,34 @@ for key_init, value_init in default_persistent_states.items():
     if key_init not in st.session_state:
         st.session_state[key_init] = value_init
 
+AVAILABLE_COLORSCALES_MAP = {
+    "Default (Yellow-Orange-Brown)": "YlOrBr",
+    "Viridis (Perceptually Uniform)": "Viridis",
+    "Plasma": "Plasma",
+    "Inferno": "Inferno",
+    "Magma": "Magma",
+    "Cividis": "Cividis",
+    "Blues": "Blues",
+    "Greens": "Greens",
+    "Reds": "Reds",
+    "Jet": "Jet",
+    "Rainbow": "Rainbow",
+    "Portland": "Portland",
+    "Blackbody": "Blackbody",
+    "Earth": "Earth",
+    "Electric": "Electric",
+    "Greys": "Greys",
+    "Hot": "Hot",
+    "Picnic": "Picnic",
+    "Spectral": "Spectral",
+    "RdBu": "RdBu",
+}
+colorscale_display_names = list(AVAILABLE_COLORSCALES_MAP.keys())
+
+SELECTBOX_STATE_KEY = "colorscale_selector_3d_loaf_selected_name"
+if SELECTBOX_STATE_KEY not in st.session_state:
+    st.session_state[SELECTBOX_STATE_KEY] = colorscale_display_names[0]
+
 
 def update_density_defaults():
     if st.session_state.density_source == "Calculate from Total Weight & Volume":
@@ -991,7 +1026,7 @@ with st.sidebar:
     st.subheader("3. ⚙️ Calculation Settings")
     st.toggle(
         "Cut Portions Always Equal Or Greater Than Target Weight (No Interpolation)", key="no_interp")
-    st.slider("Calc. Slice Thickness (mm)", 0.1, 10.0,
+    st.slider("Calculation Slice Thickness (mm)", 0.1, 10.0,
               key="slice_thickness", step=0.1, format="%.1f")
     st.number_input("Start Trim (mm)", 0.0, key="start_trim",
                     step=1.0, format="%.1f")
@@ -1037,8 +1072,8 @@ with st.sidebar:
         if st.session_state.voxel_size > 0 and not _open3d_installed:
             st.warning("Voxel downsampling requires `open3d`.")
 
-        st.checkbox("Enable Auto-Downsample (Random)", key="enable_auto_downsample",
-                    help="If point count exceeds threshold, randomly downsamples the cloud. Requires Open3D.")
+        st.checkbox("Enable Auto-Downsample On Uploaded Point Clouds", key="enable_auto_downsample",
+                    help="If point count exceeds threshold, randomly downsample the cloud. Requires Open3D.")
         st.number_input("Auto-Downsample Threshold (points)",
                         min_value=50000, max_value=5000000, step=50000,
                         key="auto_downsample_threshold",
@@ -1241,20 +1276,43 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
 
     ---
     """)
-    st.subheader("🎬 Video: Convex Hull Scanning Algorithm Explained")
-    col1_vid, col_video_main, col3_vid = st.columns([0.2, 0.6, 0.2])
-    with col_video_main:
-        try:
-            video_file_path = "C:\\ImagePortion\\Convex_Hull _Graham_Scan_Algorithm.mp4"
-            if os.path.exists(video_file_path):
-                video_file = open(video_file_path, 'rb')
-                st.video(video_file.read())
-                video_file.close()
-            else:
-                st.video(
-                    "https://www.youtube.com/watch?v=BTgjXwhoMuI&list=FLYL3nsDC4Qle3CQb4LlzL3g&ab_channel=MrYetAnotherAccount")
-        except Exception as e_vid:
-            st.error(f"Error loading video: {e_vid}")
+    st.subheader("🖼️ Visualizing Scan Boundary Algorithms")
+    col1_layout, col_main_content, col3_layout = st.columns([0.2, 0.6, 0.2])
+
+    image_path = os.path.join("assets", "Convexhull_Alphashape_Example.png")
+    video_file_path_local = os.path.join(
+        "assets", "Convex_Hull_Graham_Scan_Algorithm.mp4")
+    youtube_video_url = "https://www.youtube.com/watch?v=BTgjXwhoMuI"
+
+    with col_main_content:
+        if os.path.exists(image_path):
+            st.image(
+                image_path,
+                caption="Comparison: Convex Hull vs. Alpha Shape",
+                use_container_width=True
+            )
+        else:
+            st.warning(
+                f"Image not found at: {image_path}. Please ensure the image is saved correctly.")
+
+        st.markdown("---")
+        st.markdown("### 🎬 Convex Hull Video Demonstration")
+
+        vid_spacer1, vid_col, vid_spacer2 = st.columns([0.2, 0.8, 0.2])
+        with vid_col:
+            try:
+                if os.path.exists(video_file_path_local):
+                    with open(video_file_path_local, 'rb') as video_file:
+                        video_bytes = video_file.read()
+                    st.video(video_bytes)
+                else:
+                    st.info(
+                        f"Local video not found. Displaying fallback YouTube video.")
+                    st.video(youtube_video_url)
+            except Exception as e_vid:
+                st.error(f"Error loading video: {e_vid}")
+                st.info("Displaying fallback YouTube video due to error.")
+                st.video(youtube_video_url)
 
 refresh_data_flag_main_ui = False
 previous_data_source_tracker = st.session_state.get(
@@ -1405,15 +1463,32 @@ if points_df_disp_ui is not None and not points_df_disp_ui.empty:
         st.warning(
             "Open3D library is not installed. External inspection features are disabled.", icon="⚠️")
 
+    selected_display_name = st.selectbox(
+        "Select Point Cloud Colorscale:",
+        options=colorscale_display_names,
+        index=colorscale_display_names.index(
+            st.session_state[SELECTBOX_STATE_KEY]),
+        key="colorscale_selector_3d_loaf_widget_itself"
+    )
+
+    st.session_state.selected_colorscale_name = selected_display_name
+
+    actual_plotly_colorscale = AVAILABLE_COLORSCALES_MAP[selected_display_name]
+
     with st.spinner("Generating 3D plot for static preview..."):
-        plot_title = "Cloud with Cuts" if st.session_state.get('calc_results') and st.session_state.calc_results.get(
-            "portions") else "Current Point Cloud (Static Preview)"
+        plot_title = "Current Point Cloud"
         plot_portions = (st.session_state.get(
             'calc_results') or {}).get("portions")
         y_offset_for_plot_display = (st.session_state.get(
             'calc_results') or {}).get("y_offset_for_plot", 0.0)
+
         fig_3d_main_plot = plot_3d_loaf(
-            points_df_disp_ui, portions=plot_portions, title=plot_title, y_offset=y_offset_for_plot_display)
+            points_df_disp_ui,
+            portions=plot_portions,
+            title=plot_title,
+            y_offset=y_offset_for_plot_display,
+            selected_colorscale=actual_plotly_colorscale
+        )
         st.plotly_chart(fig_3d_main_plot, use_container_width=True,
                         key="main_3d_plot_static")
 
@@ -1507,7 +1582,7 @@ if calc_res_disp_ui:
             styles_ui = pd.DataFrame(
                 '', index=df_style_ui.index, columns=df_style_ui.columns)
             if not df_style_ui.empty:
-                styles_ui.iloc[0] = 'background-color: #FFF3CD; font-weight: bold;'
+                styles_ui.iloc[0] = 'background-color: #6495ED; font-weight: bold;'
             if tol_style_ui > 0 and len(df_style_ui) > 1:
                 try:
                     wt_col_idx_ui = df_style_ui.columns.get_loc(
@@ -1695,7 +1770,7 @@ if calc_res_disp_ui:
                             fig_slice_inspector.add_trace(go.Scatter(
                                 x=slice_x_np_interactive, y=slice_z_np_interactive, mode='markers',
                                 marker=dict(
-                                    size=3, color='lightblue', opacity=0.7),
+                                    size=3, color='darkblue', opacity=0.7),
                                 name=f'Slice Pts ({original_pts_in_slice_inspector})'
                             ))
 
