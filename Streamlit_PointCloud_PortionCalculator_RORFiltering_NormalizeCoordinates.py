@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Point Cloud Portion Calculator (Streamlit App)
 # Created - Shaun Harris
-# Version: 1.5.3 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
+# Version: 1.5.4 (Features: File Uploads (CSV/XYZ/PCD/PYL/XLSX/XLS), Test Data Gen,
 #                 Volume Modes (Hull, Flat Bottom, Top-Down), Reverse Calc,
 #                 Waste First, Interpolation Toggle, Kerf, Tolerance, Trims,
 #                 Voxel Downsampling, Optional Auto-Downsampling (Random) with User Threshold,
@@ -10,7 +10,7 @@
 #                 Decoupled data refresh, Optional Y-Normalization before calculation,
 #                 Direct Density Input, Open3D Fly Around, Open3D Static Cuts View,
 #                 Reset Button, Help Section, NumPy Optimized Volume Profiling,
-#                 Alpha Shapes for Area Calc, Slider-based Area Slice Inspector)
+#                 Alpha Shapes for Area Calc, Slider-based Area Slice Inspector, PCA Alignment Function)
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -26,6 +26,7 @@ import os       # For temporary file handling
 import openpyxl  # for .xlsx/.xls support
 import alphashape
 from shapely.geometry import Polygon, MultiPolygon
+from sklearn.decomposition import PCA
 
 # --- Optional: Import open3d with error handling ---
 _open3d_installed = False
@@ -423,6 +424,30 @@ def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y
                 else:
                     return np.nan
     return act_vol
+
+
+def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = True) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    points = df[['x', 'y', 'z']].values
+
+    # 1. Fit and transform using PCA (centers the data)
+    pca = PCA(n_components=3)
+    aligned_points = pca.fit_transform(points)
+
+    # 2. Re-order columns to match the convention (X=width, Y=length, Z=height)
+    final_aligned_points = aligned_points[:, [1, 0, 2]]
+    df_aligned = pd.DataFrame(final_aligned_points, columns=['x', 'y', 'z'])
+
+    # 3. --- OPTIONAL ---
+    # Shift the entire cloud so its minimum corner is at (0,0,0)
+    # if shift_to_origin:
+    # df_aligned['x'] -= df_aligned['x'].min()
+    # df_aligned['y'] -= df_aligned['y'].min()
+    # df_aligned['z'] -= df_aligned['z'].min()
+
+    return df_aligned
 
 
 def calculate_cut_portions_reversed(
@@ -882,7 +907,7 @@ def launch_o3d_viewer_with_cuts(points_df, portions_data, calc_start_y_from_res,
 
 
 st.set_page_config(
-    layout="wide", page_title="Point Cloud Portion Calc v1.5.3", page_icon="🔪")
+    layout="wide", page_title="Point Cloud Portion Calc v1.5.4", page_icon="🔪")
 
 default_persistent_states = {
     'point_cloud_data': None, 'data_origin': None, 'last_file_id': None, 'calc_results': None,
@@ -905,6 +930,8 @@ default_persistent_states = {
     'calculated_df_for_inspection': None,
     'slice_inspector_slider': None,
     'alphashape_slice_voxel': 0.5,
+    'point_cloud_data_before_ror': None,
+    'enable_pca_alignment': True,
     'point_cloud_data_before_ror': None,
 }
 for key_init, value_init in default_persistent_states.items():
@@ -1067,6 +1094,8 @@ with st.sidebar:
               key="flat_bottom", disabled=st.session_state.top_down_scan)
 
     with st.expander("Preprocessing & Global Downsampling"):
+        st.toggle("Auto-align Loaf with PCA", key="enable_pca_alignment",
+                  help="Corrects for skewed or rotated scans by aligning the loaf's longest dimension with the Y-axis. Applied on load.")
         st.number_input("Global Voxel Downsample Size (mm, 0=disable)", 0.0,
                         key="voxel_size", step=0.25, format="%.2f",
                         help="Applies to the entire point cloud after loading. Requires Open3D. 0 to disable.")
@@ -1230,41 +1259,43 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     **1. Sidebar Parameters:**
     *   **1. Data Source:** Upload or generate test data.
     *   **2. Weight & Density:** Set total/target weights, density calculation method.
-    *   **3. Calculation Settings:** Interpolation, slice thickness, trims, kerf.
-    *   **4. Advanced & Simulation:**
-        *   `Top-Down Only`: Simulates a single top-down profiler.
-        *   `Top & Side Only`: Assumes a flat bottom for area calculation.
-        *   `Cross-Section Area Method`:
-            *   `Convex Hull`: Standard method, robust for convex shapes.
-            *   `Alpha Shape`: (Needs Open3D) Can capture concave features. Requires tuning `Alpha Value`. Smaller alpha = tighter fit. Slower.
-        *   `Voxel Downsample`, `Auto-Downsample`, `Y-Normalization`, `Test Data Resolution`.
-    *   **5. Point Cloud Filtering (ROR):** Radius Outlier Removal.
-    *   **Calculate Portions Button:** Starts the calculation.
-    *   **Reset All to Defaults Button:** Resets options and reloads/regenerates cloud.
+    *   **3. Calculation Settings:** Choose your cutting strategy, interpolation, slice thickness, trims, and kerf.
+    *   **4. Cross-Section Area Method:** Select the algorithm for calculating slice area.
+    *   **5. Advanced & Simulation:** Configure scan types and global preprocessing options like PCA Alignment and downsampling.
+    *   **6. Point Cloud Filtering (ROR):** Optional Radius Outlier Removal to clean noisy data.
+    *   **Calculate Portions Button:** Starts the calculation based on your settings.
+    *   **Reset All to Defaults Button:** Resets all options and reloads/regenerates the cloud.
     ---
     #### **Interpreting the Display:**
     *   **Point Cloud Input Metrics:** Current point count, estimated dimensions.
-    *   **Interactive 3D Inspection (Open3D):** Fly-around view.
-    *   **Current Point Cloud (Static Preview):** Static 3D plot with calculated cuts.
+    *   **Interactive 3D Inspection (Open3D):** Fly-around view and static cuts view.
+    *   **Current Point Cloud (Static Preview):** A static 3D plot for quick inspection.
     ---
     #### **Portioning Results:**
     *   **Status Message:** Calculation feedback.
     *   **Results Summary Tab:** Portions table, download CSV, 3D cuts view (Open3D).
-    *   `Metrics`: Target/Tolerance, P1 weight, Total Weight, Density/Volume.
+    *   `Metrics`: Key values like Target Weight, Portion 1 (Waste) Weight, and Total Weight.
     *   **Analysis Plots Tab:**
-        *   `Area Profile`: Estimated cross-sectional area.
-        *   `Cumulative Weight Profile`: Weight accumulation.
-        *   `Slice Profile Inspector`: (Below plots) Use the slider to select a Y-coordinate and view the detailed XZ point distribution and the calculated shape (Convex Hull or Alpha Shape) for that slice.
+        *   `Area Profile`: Estimated cross-sectional area along the loaf.
+        *   `Cumulative Weight Profile`: Weight accumulation along the loaf.
+        *   `Slice Profile Inspector`: Use the slider to view the 2D profile and calculated shape for any slice.
     ---
     #### **Calculation Process Overview:**
-    1.  Preprocessing: Load, Normalize (opt), Downsample (opt), ROR (opt).
-    2.  Volume Profiling: Loaf sliced along Y. Slice area calculated using chosen method (Convex Hull/Alpha Shape/Top-Down). Volume = Area * Thickness.
-    3.  Density: Calculated or input directly.
-    4.  Cutting (Reversed): From rear, accumulates weight, cuts when target met.
-    5.  Portion Refinement & Output.
+    1.  **Preprocessing:** Load data. Optionally, it can be auto-aligned with PCA, normalized, and downsampled. ROR filtering can also be applied.
+    2.  **Volume Profiling:** The loaf is sliced virtually along its length. The area of each slice is calculated using the chosen method (Convex Hull/Alpha Shape/Top-Down). Volume = Area × Thickness.
+    3.  **Density:** Calculated from total weight and volume, or input directly by the user.
+    4.  **Portion Refinement & Output:** The final list of cuts is generated and displayed.
+    ---
+    #### **Key Feature: PCA Alignment**
+    The `Auto-align Loaf with PCA` toggle in the "Advanced & Simulation" section is a feature for ensuring accuracy, especially if the physical scanners are not perfectly aligned.
+
+    *   **The Problem:** If a scanner is mounted at an angle to the conveyor, it produces a skewed or "sheared" point cloud. Standard calculations on this data will be incorrect, leading to errors in volume, density, and portion weight.
+    *   **The Solution:** Principal Component Analysis (PCA) mathematically finds the true longest dimension (length), width, and height of the loaf, regardless of its initial orientation. It then automatically rotates the point cloud to be perfectly aligned with the X, Y, and Z axes before any calculations are performed.
+    *   **Recommendation:** Keep this enabled unless you are certain your scanning system is perfectly calibrated. It provides robustness against physical installation errors.
+
     ---
     #### **Area Algorithm Differences:**
-    The method chosen for `Cross-Section Area Method` in the sidebar affects how the area of each 2D slice of the point cloud is estimated.
+    The method chosen for `Cross-Section Area Method` affects how the area of each 2D slice of the point cloud is estimated.
 
     | Feature          | Convex Hull                            | Alpha Shape                             |
     | :--------------- | :------------------------------------- | :-------------------------------------- |
@@ -1369,6 +1400,18 @@ if refresh_data_flag_main_ui:
             st.session_state.original_point_count = len(temp_df_load_main_ui)
             st.session_state.data_origin = f"Uploaded: {uploaded_file_sb.name}"
             st.session_state.last_file_id = f"{uploaded_file_sb.name}-{uploaded_file_sb.size}"
+            if temp_df_load_main_ui is not None and not temp_df_load_main_ui.empty and st.session_state.enable_pca_alignment:
+                with st.spinner("Step 2/N: Aligning point cloud with PCA..."):
+                    n_pts_before = len(temp_df_load_main_ui)
+                    temp_df_load_main_ui = align_point_cloud_with_pca(
+                        temp_df_load_main_ui)
+                    n_pts_after = len(temp_df_load_main_ui)
+                    if n_pts_before == n_pts_after:
+                        st.toast(
+                            "Cloud aligned successfully with PCA.", icon="🔄")
+                    else:
+                        st.warning(
+                            "PCA alignment resulted in a data change. Check logs.")
             if st.session_state.enable_auto_downsample and len(temp_df_load_main_ui) > st.session_state.auto_downsample_threshold:
                 current_step += 1
                 spinner_msg_auto_ds = f"Step {current_step}/{total_steps}: Auto-downsampling (Random) as point count {len(temp_df_load_main_ui):,} > {st.session_state.auto_downsample_threshold:,}..."
