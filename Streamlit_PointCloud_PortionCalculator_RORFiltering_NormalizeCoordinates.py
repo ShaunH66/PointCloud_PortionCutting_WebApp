@@ -1094,7 +1094,7 @@ with st.sidebar:
               key="flat_bottom", disabled=st.session_state.top_down_scan)
 
     with st.expander("Preprocessing & Global Downsampling"):
-        st.toggle("Auto-align Loaf with PCA", key="enable_pca_alignment",
+        st.toggle("Auto-align with PCA", key="enable_pca_alignment",
                   help="Corrects for skewed or rotated scans by aligning the loaf's longest dimension with the Y-axis. Applied on load.")
         st.number_input("Global Voxel Downsample Size (mm, 0=disable)", 0.0,
                         key="voxel_size", step=0.25, format="%.2f",
