@@ -1311,21 +1311,20 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     st.subheader("🖼️ Visualizing Scan Boundary Algorithms")
     col1_layout, col_main_content, col3_layout = st.columns([0.2, 0.6, 0.2])
 
-    image_path = os.path.join("assets", "Convexhull_Alphashape_Example.png")
+    image_url = "https://i.imgur.com/gMYhCvO.png" 
     video_file_path_local = os.path.join(
         "assets", "Convex_Hull_Graham_Scan_Algorithm.mp4")
     youtube_video_url = "https://www.youtube.com/watch?v=BTgjXwhoMuI"
 
     with col_main_content:
-        if os.path.exists(image_path):
+        try:
             st.image(
-                image_path,
+                image_url,
                 caption="Comparison: Convex Hull vs. Alpha Shape",
                 use_container_width=True
             )
-        else:
-            st.warning(
-                f"Image not found at: {image_path}. Please ensure the image is saved correctly.")
+        except Exception as e:
+            st.warning(f"Could not load image from URL. Error: {e}")
 
         st.markdown("---")
         st.markdown("### 🎬 Convex Hull Video Demonstration")
