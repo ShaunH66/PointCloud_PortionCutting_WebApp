@@ -426,7 +426,7 @@ def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y
     return act_vol
 
 
-def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = True) -> pd.DataFrame:
+def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = False) -> pd.DataFrame:
     if df is None or df.empty:
         return df
 
@@ -442,10 +442,10 @@ def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = True) -
 
     # 3. --- OPTIONAL ---
     # Shift the entire cloud so its minimum corner is at (0,0,0)
-    # if shift_to_origin:
-    # df_aligned['x'] -= df_aligned['x'].min()
-    # df_aligned['y'] -= df_aligned['y'].min()
-    # df_aligned['z'] -= df_aligned['z'].min()
+    if shift_to_origin:
+        df_aligned['x'] -= df_aligned['x'].min()
+        df_aligned['y'] -= df_aligned['y'].min()
+        df_aligned['z'] -= df_aligned['z'].min()
 
     return df_aligned
 
@@ -1286,12 +1286,12 @@ with st.expander("ℹ️ Help / App Information", expanded=False):
     3.  **Density:** Calculated from total weight and volume, or input directly by the user.
     4.  **Portion Refinement & Output:** The final list of cuts is generated and displayed.
     ---
-    #### **Key Feature: PCA Alignment**
+    #### **PCA Alignment**
     The `Auto-align Loaf with PCA` toggle in the "Advanced & Simulation" section is a feature for ensuring accuracy, especially if the physical scanners are not perfectly aligned.
 
     *   **The Problem:** If a scanner is mounted at an angle to the conveyor, it produces a skewed or "sheared" point cloud. Standard calculations on this data will be incorrect, leading to errors in volume, density, and portion weight.
     *   **The Solution:** Principal Component Analysis (PCA) mathematically finds the true longest dimension (length), width, and height of the loaf, regardless of its initial orientation. It then automatically rotates the point cloud to be perfectly aligned with the X, Y, and Z axes before any calculations are performed.
-    *   **Recommendation:** Keep this enabled unless you are certain your scanning system is perfectly calibrated. It provides robustness against physical installation errors.
+    *   **Recommendation:** Keep this enabled unless you are certain your scanning system is perfectly calibrated.
 
     ---
     #### **Area Algorithm Differences:**
