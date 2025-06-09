@@ -8,3 +8,4 @@ openpyxl>=3.0.0  # Optional: for .xlsx/.xls support
 # Optional, but needed for .pcd file support and downsampling:
 open3d>=0.14.0   # 3D data processing library (recommend 0.14 or later)
 alphashape
+sklearn
