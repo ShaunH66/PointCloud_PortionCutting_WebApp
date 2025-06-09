@@ -4,7 +4,7 @@ pandas
 plotly
 scipy
 openpyxl
-open3d==0.17.0 
+open3d
 scikit-learn
 alphashape
 shapely
