@@ -536,30 +536,6 @@ def process_single_file(xyz_file_path, log_messages):
             pd.options.display.float_format = '{:,.2f}'.format
             print(summary_df.to_string(index=False))
 
-        # --- Optional: Launch Open3D Viewers ---
-        if AUTO_OPEN_O3D_FLYAROUND and _open3d_installed:
-            print("\nLaunching Open3D Fly-Around Viewer...")
-            start_o3d_visualization(final_display_cloud)
-
-        if AUTO_OPEN_O3D_WITH_CUTS and _open3d_installed:
-            print("\nLaunching Open3D Viewer with Cuts...")
-            o3d_portions = []
-            for p in original_portions:
-                p_copy = p.copy()
-                p_copy['display_start_y'] += y_offset
-                p_copy['display_end_y'] += y_offset
-                if 'cut_y' in p_copy:
-                    p_copy['cut_y'] += y_offset
-                o3d_portions.append(p_copy)
-
-            launch_o3d_viewer_with_cuts(
-                final_display_cloud,
-                o3d_portions,
-                calc_results.get("calc_start_y", 0) + y_offset,
-                calc_results.get("calc_end_y", 0) + y_offset,
-                0
-            )
-
         # --- Step 7: Write Results back to PLC ---
         if PLC_MODE and calc_results:
             log("\n[7/7] Writing results back to PLC...")
@@ -618,6 +594,30 @@ def process_single_file(xyz_file_path, log_messages):
         else:
             log("\n[7/7] PLC Write-Back skipped (PLC_MODE is disabled or no results).")
         
+        # --- Optional: Launch Open3D Viewers ---
+        if AUTO_OPEN_O3D_FLYAROUND and _open3d_installed:
+            print("\nLaunching Open3D Fly-Around Viewer...")
+            start_o3d_visualization(final_display_cloud)
+
+        if AUTO_OPEN_O3D_WITH_CUTS and _open3d_installed:
+            print("\nLaunching Open3D Viewer with Cuts...")
+            o3d_portions = []
+            for p in original_portions:
+                p_copy = p.copy()
+                p_copy['display_start_y'] += y_offset
+                p_copy['display_end_y'] += y_offset
+                if 'cut_y' in p_copy:
+                    p_copy['cut_y'] += y_offset
+                o3d_portions.append(p_copy)
+
+            launch_o3d_viewer_with_cuts(
+                final_display_cloud,
+                o3d_portions,
+                calc_results.get("calc_start_y", 0) + y_offset,
+                calc_results.get("calc_end_y", 0) + y_offset,
+                0
+            )
+            
         end_time = time.time()
         print(
             f"\n--- Headless Pipeline Finished in {end_time - start_time:.2f} seconds ---")
