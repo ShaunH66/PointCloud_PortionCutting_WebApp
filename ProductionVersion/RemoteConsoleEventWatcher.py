@@ -103,6 +103,7 @@ XYZ_PROCESSED_FOLDER = "xyz_processed"  # Folder to move files to after processi
 PLC_MODE = False                  # SET TO True TO READ PARAMS FROM PLC
 PLC_IP_ADDRESS = "192.168.1.10"  # IMPORTANT: Change to your PLC's IP address
 PLC_PROCESSOR_SLOT = 0           # Slot of the CompactLogix/ControlLogix processor
+PLC_PORTION_ARRAY_SIZE = 25      # PLC max array size for portions
 
 # This dictionary maps your script's parameter names to the PLC tag names.
 # IMPORTANT: You MUST update the PLC tag names on the right side.
@@ -129,6 +130,14 @@ PLC_TAG_MAPPING = {
     # 0 = "Convex Hull"
     # 1 = "Alpha Shape"
     "area_method_selector": "HMI_Area_Method_Selector"      # PLC Tag Type: DINT
+}
+
+PLC_WRITE_TAG_MAPPING = {
+    "total_portions_calculated": "PC_Total_Portions_Calculated",
+    "average_portion_weight": "PC_Avg_Portion_Weight",
+    "first_portion_weight": "PC_First_Portion_Weight",
+    "calculated_density_g_cm3": "PC_Calculated_Density",
+    "total_loaf_length": "PC_Total_Loaf_Length", 
 }
 
 # =============================================================================
@@ -237,6 +246,64 @@ def get_params_from_plc(ip_address, slot, tag_map, log_func):
     return plc_params
 
 
+def write_results_to_plc(ip_address, slot, single_results_dict, portion_list_of_dicts, log_func):
+    """Connects to a Rockwell PLC and writes single values and an array of UDTs."""
+    if PLC is None:
+        log_func("    ...PLC Write-Back skipped: pylogix library not installed.")
+        return False
+
+    log_func(f"    ...Connecting to PLC at {ip_address} to write results...")
+    
+    tags_to_write = []
+    
+    # 1. Prepare single value tags
+    for result_key, plc_tag in PLC_WRITE_TAG_MAPPING.items():
+        if result_key in single_results_dict:
+            tags_to_write.append((plc_tag, single_results_dict[result_key]))
+        else:
+            log_func(f"        - WARNING: Single result key '{result_key}' not found.")
+
+    # 2. Prepare the UDT array write
+    if portion_list_of_dicts:
+        for i, portion_dict in enumerate(portion_list_of_dicts):
+            if i >= PLC_PORTION_ARRAY_SIZE:
+                log_func(f"        - WARNING: More portions calculated ({len(portion_list_of_dicts)}) than PLC array size ({PLC_PORTION_ARRAY_SIZE}). Truncating.")
+                break
+            
+            # For each portion, create writes for each member of the UDT
+            tags_to_write.append((f"PC_Portion_Results[{i}].Start_Y", portion_dict["Start Y (mm)"]))
+            tags_to_write.append((f"PC_Portion_Results[{i}].End_Y", portion_dict["End Y (mm)"]))
+            tags_to_write.append((f"PC_Portion_Results[{i}].Length", portion_dict["Length (mm)"]))
+            tags_to_write.append((f"PC_Portion_Results[{i}].Weight", portion_dict["Weight (g)"]))
+
+    if not tags_to_write:
+        log_func("    ...PLC Write-Back skipped: No data prepared to write.")
+        return False
+
+    try:
+        with PLC() as comm:
+            comm.IPAddress = ip_address
+            comm.ProcessorSlot = slot
+            
+            response = comm.Write(tags_to_write)
+            
+            if comm.StatusCode != 0:
+                log_func(f"    ...ERROR communicating with PLC during write: {comm.Status}")
+                return False
+
+            log_func("    ...Successfully wrote results to PLC.")
+            # Optional: Log a few key values to confirm
+            for tag, value in tags_to_write[:5]: # Log first 5 writes
+                 log_func(f"        - Wrote to '{tag}': {value:.2f}")
+            if len(tags_to_write) > 5:
+                log_func("        - ... and other tags.")
+
+        return True
+    except Exception as e:
+        log_func(f"    ...CRITICAL PLC Write-Back ERROR: {e}")
+        return False
+    
+    
 def process_single_file(xyz_file_path, log_messages):
     
     try: 
@@ -493,6 +560,64 @@ def process_single_file(xyz_file_path, log_messages):
                 0
             )
 
+        # --- Step 7: Write Results back to PLC ---
+        if PLC_MODE and calc_results:
+            log("\n[7/7] Writing results back to PLC...")
+            
+            original_portions = calc_results.get("portions", [])
+            scanner_offset = calc_results.get("y_offset_for_plot", 0.0)
+
+            # --- A. Prepare single value results ---
+            total_good_portions = len(original_portions) - 1 if len(original_portions) > 1 else 0
+            first_portion_weight = original_portions[0]['weight'] if original_portions else 0.0
+            total_weight_of_good_portions = sum(p['weight'] for p in original_portions[1:])
+            avg_weight = total_weight_of_good_portions / total_good_portions if total_good_portions > 0 else 0.0
+            density_g_cm3 = calc_results.get("density", 0.0) * 1000.0
+            
+            # Calculate total loaf length from the normalized display data
+            total_loaf_length = 0.0
+            if len(original_portions) > 0:
+                start_y = original_portions[0]['display_start_y']
+                end_y = original_portions[-1]['display_end_y']
+                total_loaf_length = end_y - start_y
+                
+            single_results_to_write = {
+                "total_portions_calculated": total_good_portions,
+                "average_portion_weight": avg_weight,
+                "first_portion_weight": first_portion_weight,
+                "calculated_density_g_cm3": density_g_cm3,
+                "total_loaf_length": total_loaf_length,
+            }
+            
+            # --- B. Prepare the list of portion dictionaries for the UDT array ---
+            # The PLC needs the "start-at-zero" normalized values
+            block_start_y_real = 0.0
+            if len(original_portions) > 0:
+                block_start_y_real = original_portions[0]['display_start_y'] + scanner_offset
+
+            portions_to_write = []
+            for p in original_portions:
+                real_start_y = p['display_start_y'] + scanner_offset
+                real_end_y = p['display_end_y'] + scanner_offset
+                portions_to_write.append({
+                    "Portion #": p['portion_num'], # Not written, just for reference
+                    "Start Y (mm)": real_start_y - block_start_y_real,
+                    "End Y (mm)": real_end_y - block_start_y_real,
+                    "Length (mm)": p['length'],
+                    "Weight (g)": p['weight']
+                })
+
+            # --- C. Call the write function ---
+            write_results_to_plc(
+                PLC_IP_ADDRESS, 
+                PLC_PROCESSOR_SLOT, 
+                single_results_to_write, 
+                portions_to_write, 
+                log
+            )
+        else:
+            log("\n[7/7] PLC Write-Back skipped (PLC_MODE is disabled or no results).")
+        
         end_time = time.time()
         print(
             f"\n--- Headless Pipeline Finished in {end_time - start_time:.2f} seconds ---")
