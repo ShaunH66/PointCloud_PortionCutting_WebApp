@@ -103,7 +103,7 @@ XYZ_PROCESSED_FOLDER = "xyz_processed"  # Folder to move files to after processi
 PLC_MODE = False                  # SET TO True TO READ PARAMS FROM PLC
 PLC_IP_ADDRESS = "192.168.1.10"  # IMPORTANT: Change to your PLC's IP address
 PLC_PROCESSOR_SLOT = 0           # Slot of the CompactLogix/ControlLogix processor
-PLC_PORTION_ARRAY_SIZE = 25      # PLC max array size for portions
+PLC_PORTION_ARRAY_SIZE = 100      # PLC max array size for portions
 
 # This dictionary maps your script's parameter names to the PLC tag names.
 # IMPORTANT: You MUST update the PLC tag names on the right side.
