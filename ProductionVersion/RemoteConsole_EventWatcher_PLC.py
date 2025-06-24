@@ -23,6 +23,7 @@ try:
         perform_portion_calculation,
         start_o3d_visualization,
         launch_o3d_viewer_with_cuts,
+        load_point_cloud_from_file,
         _open3d_installed,
     )
 
@@ -38,8 +39,14 @@ except ImportError as e:
 # --- CONFIGURATION SECTION ---
 # =============================================================================
 
-# 1. Input Data File
-INPUT_XYZ_FILE = "scanner_data.xyz"  # Path to the input .xyz file
+# 1. Supported File Formats                 
+# Extension	    Primary Loader	    Fallback Loader	    Notes
+# .xyz	        Open3D	                Pandas	        Most common text format. Fast loading with Open3D.
+# .pcd	        Open3D	                  -	            Standard PCL format. Supports binary for speed and size.
+# .ply	        Open3D	                  -	            Standard format for 3D scanned data. Supports binary.
+# .csv	        Pandas	                  -	            Flexible text format. Can have headers or not.
+# .xlsx	        Pandas	                  -	            Requires openpyxl. Reads the first sheet.
+# .xls	        Pandas	                  -	            Legacy Excel format. Reads the first sheet.
 
 # 2. Output File for the Streamlit Viewer
 LATEST_PAYLOAD_FILE = "latest_run_payload.pkl"
@@ -100,24 +107,25 @@ XYZ_INPUT_FOLDER = "xyz_input"          # Folder to watch for new .xyz files
 XYZ_PROCESSED_FOLDER = "xyz_processed"  # Folder to move files to after processing
 
 # 7. PLC Configuration
-PLC_MODE = False                  # SET TO True TO READ PARAMS FROM PLC
+PLC_MODE = False              # SET TO True TO READ PARAMS FROM PLC
 PLC_IP_ADDRESS = "192.168.1.10"  # IMPORTANT: Change to your PLC's IP address
 PLC_PROCESSOR_SLOT = 0           # Slot of the CompactLogix/ControlLogix processor
-PLC_PORTION_ARRAY_SIZE = 100      # PLC max array size for portions
+PLC_PORTION_ARRAY_SIZE = 100     # PLC max array size for portions
 
 # This dictionary maps your script's parameter names to the PLC tag names.
 # IMPORTANT: You MUST update the PLC tag names on the right side.
 PLC_TAG_MAPPING = {
     # Parameter Name in this Script : "PLC_Tag_Name"
-    "target_weight": "HMI_Target_Weight",     # e.g., a REAL tag
-    "total_weight": "HMI_Total_Weight",       # e.g., a REAL tag
-    "start_trim": "HMI_Start_Trim",           # e.g., a REAL tag
-    "end_trim": "HMI_End_Trim",             # e.g., a REAL tag
-    "weight_tolerance": "HMI_Weight_Tolerance", # e.g., a REAL tag
-    "no_interp": "HMI_No_Interpolation_On", # e.g., a BOOL tag (0 or 1)
-    "pca_align": "HMI_PCA_Align_On",      # e.g., a BOOL tag (0 or 1)
-    "blade_thickness": "HMI_Blade_Thickness", # e.g., a REAL tag (0.0 to disable)
-    "slice_thickness": "HMI_Slice_Thickness", # e.g., a REAL tag
+    "target_weight": "HMI_Target_Weight",           # e.g., a REAL tag
+    "total_weight": "HMI_Total_Weight",             # e.g., a REAL tag
+    "start_trim": "HMI_Start_Trim",                 # e.g., a REAL tag
+    "end_trim": "HMI_End_Trim",                     # e.g., a REAL tag
+    "weight_tolerance": "HMI_Weight_Tolerance",     # e.g., a REAL tag
+    "no_interp": "HMI_No_Interpolation_On",         # e.g., a BOOL tag (0 or 1)
+    "pca_align": "HMI_PCA_Align_On",                # e.g., a BOOL tag (0 or 1)
+    "blade_thickness": "HMI_Blade_Thickness",       # e.g., a REAL tag (0.0 to disable)
+    "slice_thickness": "HMI_Slice_Thickness",       # e.g., a REAL tag
+    "completion_counter": "PC_Completion_Counter",  # e.g., a DINT tag
 
     # 0 = "Calculate from Total Weight & Volume"
     # 1 = "Input Directly"
@@ -133,32 +141,18 @@ PLC_TAG_MAPPING = {
 }
 
 PLC_WRITE_TAG_MAPPING = {
-    "total_portions_calculated": "PC_Total_Portions_Calculated",
-    "average_portion_weight": "PC_Avg_Portion_Weight",
-    "first_portion_weight": "PC_First_Portion_Weight",
-    "calculated_density_g_cm3": "PC_Calculated_Density",
-    "total_loaf_length": "PC_Total_Loaf_Length", 
+    "completion_counter": "PC_Completion_Counter",               # PLC Tag Type: DINT
+    "total_portions_calculated": "PC_Total_Portions_Calculated", # PLC Tag Type: DINT
+    "average_portion_weight": "PC_Avg_Portion_Weight",           # PLC Tag Type: REAL
+    "first_portion_weight": "PC_First_Portion_Weight",           # PLC Tag Type: REAL
+    "calculated_density_g_cm3": "PC_Calculated_Density",         # PLC Tag Type: REAL
+    "total_loaf_length": "PC_Total_Loaf_Length",                 # PLC Tag Type: REAL
 }
 
 # =============================================================================
 # --- SCRIPT LOGIC ---
 # =============================================================================
 
-
-def load_xyz_to_numpy(file_path):
-    """Loads a .xyz file into a NumPy array, handling errors."""
-    if not os.path.exists(file_path):
-        print(f"\nERROR: File not found at '{file_path}'")
-        return None
-    try:
-        df = pd.read_csv(file_path, sep='\s+', header=None,
-                         usecols=[0, 1, 2], names=['x', 'y', 'z'])
-        df = df.dropna().astype(float)
-        return df[['x', 'y', 'z']].to_numpy()
-    except Exception as e:
-        print(f"\nERROR: Could not load XYZ file '{file_path}': {e}")
-        return None
-    
 
 def manage_archives(base_folder, days_to_keep):
     """Deletes files in the base_folder older than a specified number of days by parsing the filename."""
@@ -221,9 +215,9 @@ def get_params_from_plc(ip_address, slot, tag_map, log_func):
             # Read all tags in one request for efficiency
             results = comm.Read(tags_to_read)
             
-            if comm.StatusCode != 0:
-                log_func(f"    ...ERROR communicating with PLC: {comm.Status}")
-                return {}
+            #if comm.StatusCode != 0:
+                #log_func(f"    ...ERROR communicating with PLC: {comm.Status}")
+                #return {}
 
             log_func("    ...Successfully connected and read tags.")
             
@@ -231,7 +225,7 @@ def get_params_from_plc(ip_address, slot, tag_map, log_func):
             for script_param, plc_tag in tag_map.items():
                 # Find the corresponding result object
                 tag_result = next((r for r in results if r.TagName == plc_tag), None)
-                if tag_result and tag_result.Status == 'Success':
+                if tag_result: #and tag_result.Status == 'Success':
                     # Convert BOOLs from 0/1 to True/False
                     if isinstance(tag_result.Value, int) and script_param in ['no_interp', 'pca_align']:
                         plc_params[script_param] = bool(tag_result.Value)
@@ -287,9 +281,9 @@ def write_results_to_plc(ip_address, slot, single_results_dict, portion_list_of_
             
             response = comm.Write(tags_to_write)
             
-            if comm.StatusCode != 0:
-                log_func(f"    ...ERROR communicating with PLC during write: {comm.Status}")
-                return False
+            #if comm.StatusCode != 0:
+                #log_func(f"    ...ERROR communicating with PLC during write: {comm.Status}")
+                #return False
 
             log_func("    ...Successfully wrote results to PLC.")
             # Optional: Log a few key values to confirm
@@ -307,7 +301,7 @@ def write_results_to_plc(ip_address, slot, single_results_dict, portion_list_of_
 def process_single_file(xyz_file_path, log_messages):
     
     try: 
-        print("--- Headless Pipeline Starting ---")   
+        print("\n\n--- Headless Pipeline Starting ---")   
         start_time = time.time()
 
         # Use a single list to capture all log messages
@@ -328,10 +322,12 @@ def process_single_file(xyz_file_path, log_messages):
         current_pipeline_params = DEFAULT_PIPELINE_PARAMS.copy()
         
         if PLC_MODE:
+            PLC_read_starttime = time.time()
             log("    ...PLC_MODE is enabled.")
             plc_values = get_params_from_plc(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, PLC_TAG_MAPPING, log)
             if plc_values:
-                
+                end_time = time.time()
+                log(f"\n--- PLC Read took {end_time - PLC_read_starttime:.2f} seconds ---")
                 # Translate Density Source
                 density_selector = plc_values.pop('density_source_selector', 0) # Use .pop to remove selector
                 if density_selector == 1:
@@ -356,10 +352,12 @@ def process_single_file(xyz_file_path, log_messages):
         else:
             log("    ...PLC_MODE is disabled. Using script defaults.")
             
-        # --- Step 1: Load Point Cloud ---
-        points_numpy_array = load_xyz_to_numpy(xyz_file_path)
-        if points_numpy_array is None:
-            log("Aborting due to file loading error.")
+        # --- Step 1: Load Raw Point Cloud ---
+        log(f"\n[1/7] Loading raw data from: {os.path.basename(xyz_file_path)}")
+        points_numpy_array = load_point_cloud_from_file(xyz_file_path)
+        
+        if points_numpy_array is None or points_numpy_array.shape[0] == 0:
+            log("Aborting due to file loading error or empty cloud.")
             return
         current_points_df = pd.DataFrame(
             points_numpy_array, columns=['x', 'y', 'z'])
@@ -369,16 +367,16 @@ def process_single_file(xyz_file_path, log_messages):
 
         # --- Step 2: PCA Alignment (Optional) ---
         if current_pipeline_params.get("pca_align"):
-            log("\n[2/6] Applying PCA Alignment...")
+            log("\n[2/7] Applying PCA Alignment...")
             processed_df = align_point_cloud_with_pca(processed_df)
             log("    ...PCA Alignment Complete.")
         else:
-            log("\n[2/6] PCA Alignment skipped (disabled in config).")
+            log("\n[2/7] PCA Alignment skipped (disabled in config).")
 
         # --- Step 3: Auto Downsample (Optional) ---
         if current_pipeline_params.get("enable_auto_downsample") and len(processed_df) > current_pipeline_params.get("auto_downsample_threshold", 9e9):
             threshold = current_pipeline_params.get("auto_downsample_threshold")
-            log(f"\n[3/6] Applying Auto-Downsample (Threshold: {threshold:,})...")
+            log(f"\n[3/7] Applying Auto-Downsample (Threshold: {threshold:,})...")
             if _open3d_installed:
                 pcd_ds = o3d.geometry.PointCloud()
                 pcd_ds.points = o3d.utility.Vector3dVector(processed_df.to_numpy())
@@ -389,11 +387,11 @@ def process_single_file(xyz_file_path, log_messages):
             else:
                 log("    ...Auto-Downsample skipped: Open3D not installed.")
         else:
-            log("\n[3/6] Auto-Downsample skipped (not needed or disabled).")
+            log("\n[3/7] Auto-Downsample skipped (not needed or disabled).")
 
         # --- Step 4: Radius Outlier Removal (Optional) ---
         if current_pipeline_params.get("apply_ror"):
-            log("\n[4/6] Applying Radius Outlier Removal Filter...")
+            log("\n[4/7] Applying Radius Outlier Removal Filter...")
             if _open3d_installed:
                 pcd_ror = o3d.geometry.PointCloud()
                 pcd_ror.points = o3d.utility.Vector3dVector(
@@ -418,12 +416,12 @@ def process_single_file(xyz_file_path, log_messages):
             else:
                 log("    ...ROR Filter skipped: Open3D not installed.")
         else:
-            log("\n[4/6] ROR Filter skipped (disabled in config).")
+            log("\n[4/7] ROR Filter skipped (disabled in config).")
 
         final_display_cloud = processed_df.copy()
 
         # --- Step 5: Y-Normalization & Final Calculation ---
-        log("\n[5/6] Normalizing and Calculating Portions...")
+        log("\n[5/7] Normalizing and Calculating Portions...")
         df_for_calc = processed_df.copy()
         y_offset = 0.0
         if current_pipeline_params.get("enable_y_normalization"):
@@ -433,7 +431,7 @@ def process_single_file(xyz_file_path, log_messages):
                 log(
                     f"    ...Y-coords normalized for calculation. Scanner Offset: {y_offset:.2f} mm")
         else:
-            log("\n[5/6] Normalization skipped (disabled in config).")
+            log("\n[5/7] Normalization skipped (disabled in config).")
 
         calculation_args = {
             "total_w": current_pipeline_params.get("total_weight"), "target_w": current_pipeline_params.get("target_weight"),
@@ -451,14 +449,81 @@ def process_single_file(xyz_file_path, log_messages):
 
         calc_results = perform_portion_calculation(
             points_df=df_for_calc, verbose_log_func=log, **calculation_args)
-
+        
         if calc_results:
             calc_results["y_offset_for_plot"] = y_offset
         else:
             log("    ...Portion calculation failed or returned no results.")
             return
 
-        # --- Step 6: Save Payload & Display Results ---
+        # --- Step 7: Write Results back to PLC ---
+        if PLC_MODE and calc_results:
+            PLC_write_starttime = time.time()
+            log("\n[6/7] Writing results back to PLC...")
+            
+            current_counter = current_pipeline_params.get("completion_counter", 0)
+            # Increment the counter, with a rollover to prevent overflow
+            new_counter = (current_counter + 1) % 2147483647 # Max DINT value
+            
+            original_portions = calc_results.get("portions", [])
+            scanner_offset = calc_results.get("y_offset_for_plot", 0.0)
+
+            # --- A. Prepare single value results ---
+            total_good_portions = len(original_portions) - 1 if len(original_portions) > 1 else 0
+            first_portion_weight = original_portions[0]['weight'] if original_portions else 0.0
+            total_weight_of_good_portions = sum(p['weight'] for p in original_portions[1:])
+            avg_weight = total_weight_of_good_portions / total_good_portions if total_good_portions > 0 else 0.0
+            density_g_cm3 = calc_results.get("density", 0.0) * 1000.0
+            
+            # Calculate total loaf length from the normalized display data
+            total_loaf_length = 0.0
+            if len(original_portions) > 0:
+                start_y = original_portions[0]['display_start_y']
+                end_y = original_portions[-1]['display_end_y']
+                total_loaf_length = end_y - start_y
+                
+            single_results_to_write = {
+                "completion_counter": new_counter,
+                "total_portions_calculated": total_good_portions,
+                "average_portion_weight": avg_weight,
+                "first_portion_weight": first_portion_weight,
+                "calculated_density_g_cm3": density_g_cm3,
+                "total_loaf_length": total_loaf_length,
+            }
+            
+            # --- B. Prepare the list of portion dictionaries for the UDT array ---
+            # The PLC needs the "start-at-zero" normalized values
+            block_start_y_real = 0.0
+            if len(original_portions) > 0:
+                block_start_y_real = original_portions[0]['display_start_y'] + scanner_offset
+
+            portions_to_write = []
+            for p in original_portions:
+                real_start_y = p['display_start_y'] + scanner_offset
+                real_end_y = p['display_end_y'] + scanner_offset
+                portions_to_write.append({
+                    "Portion #": p['portion_num'], # Not written, just for reference
+                    "Start Y (mm)": real_start_y - block_start_y_real,
+                    "End Y (mm)": real_end_y - block_start_y_real,
+                    "Length (mm)": p['length'],
+                    "Weight (g)": p['weight']
+                })
+
+            # --- C. Call the write function ---
+            write_results_to_plc(
+                PLC_IP_ADDRESS, 
+                PLC_PROCESSOR_SLOT, 
+                single_results_to_write, 
+                portions_to_write, 
+                log
+            )
+
+            end_time = time.time()
+            log(f"\n--- Pipeline upto PLC Write Time {end_time - start_time:.2f} seconds, Write took {end_time - PLC_write_starttime:.2f} seconds ---")
+        else:
+            log("\n[6/7] PLC Write-Back skipped (PLC_MODE is disabled or no results).")
+
+        # --- Step 7: Save Payload & Display Results ---
         # Create the final payload dictionary
         output_payload = {
             "original_point_cloud_df": points_numpy_array,
@@ -477,11 +542,11 @@ def process_single_file(xyz_file_path, log_messages):
         if ENABLE_ARCHIVING:
             os.makedirs(ARCHIVE_BASE_FOLDER, exist_ok=True)
             output_path = os.path.join(ARCHIVE_BASE_FOLDER, unique_filename)
-            log(f"\n[6/6] Archiving enabled. Saving payload to '{output_path}'...")
+            log(f"\n[7/7] Archiving enabled. Saving payload to '{output_path}'...")
         else:
             # Save to the root directory with a unique name
             output_path = unique_filename
-            log(f"\n[6/6] Archiving disabled. Saving uniquely named payload to '{output_path}'...")
+            log(f"\n[7/7] Archiving disabled. Saving uniquely named payload to '{output_path}'...")
 
         try:
             # Save the uniquely named file
@@ -536,63 +601,8 @@ def process_single_file(xyz_file_path, log_messages):
             pd.options.display.float_format = '{:,.2f}'.format
             print(summary_df.to_string(index=False))
 
-        # --- Step 7: Write Results back to PLC ---
-        if PLC_MODE and calc_results:
-            log("\n[7/7] Writing results back to PLC...")
-            
-            original_portions = calc_results.get("portions", [])
-            scanner_offset = calc_results.get("y_offset_for_plot", 0.0)
-
-            # --- A. Prepare single value results ---
-            total_good_portions = len(original_portions) - 1 if len(original_portions) > 1 else 0
-            first_portion_weight = original_portions[0]['weight'] if original_portions else 0.0
-            total_weight_of_good_portions = sum(p['weight'] for p in original_portions[1:])
-            avg_weight = total_weight_of_good_portions / total_good_portions if total_good_portions > 0 else 0.0
-            density_g_cm3 = calc_results.get("density", 0.0) * 1000.0
-            
-            # Calculate total loaf length from the normalized display data
-            total_loaf_length = 0.0
-            if len(original_portions) > 0:
-                start_y = original_portions[0]['display_start_y']
-                end_y = original_portions[-1]['display_end_y']
-                total_loaf_length = end_y - start_y
-                
-            single_results_to_write = {
-                "total_portions_calculated": total_good_portions,
-                "average_portion_weight": avg_weight,
-                "first_portion_weight": first_portion_weight,
-                "calculated_density_g_cm3": density_g_cm3,
-                "total_loaf_length": total_loaf_length,
-            }
-            
-            # --- B. Prepare the list of portion dictionaries for the UDT array ---
-            # The PLC needs the "start-at-zero" normalized values
-            block_start_y_real = 0.0
-            if len(original_portions) > 0:
-                block_start_y_real = original_portions[0]['display_start_y'] + scanner_offset
-
-            portions_to_write = []
-            for p in original_portions:
-                real_start_y = p['display_start_y'] + scanner_offset
-                real_end_y = p['display_end_y'] + scanner_offset
-                portions_to_write.append({
-                    "Portion #": p['portion_num'], # Not written, just for reference
-                    "Start Y (mm)": real_start_y - block_start_y_real,
-                    "End Y (mm)": real_end_y - block_start_y_real,
-                    "Length (mm)": p['length'],
-                    "Weight (g)": p['weight']
-                })
-
-            # --- C. Call the write function ---
-            write_results_to_plc(
-                PLC_IP_ADDRESS, 
-                PLC_PROCESSOR_SLOT, 
-                single_results_to_write, 
-                portions_to_write, 
-                log
-            )
-        else:
-            log("\n[7/7] PLC Write-Back skipped (PLC_MODE is disabled or no results).")
+        end_time = time.time()
+        print(f"\n--- Pipeline completed in {end_time - start_time:.2f} seconds ---")
         
         # --- Optional: Launch Open3D Viewers ---
         if AUTO_OPEN_O3D_FLYAROUND and _open3d_installed:
@@ -617,10 +627,7 @@ def process_single_file(xyz_file_path, log_messages):
                 calc_results.get("calc_end_y", 0) + y_offset,
                 0
             )
-            
-        end_time = time.time()
-        print(
-            f"\n--- Headless Pipeline Finished in {end_time - start_time:.2f} seconds ---")
+            print("\n--- Headless Pipeline Completed Successfully ---")
 
         return True, log_messages
     
@@ -633,7 +640,8 @@ def process_single_file(xyz_file_path, log_messages):
 def start_watcher_service():
     """Main function to run the listener service."""
     print("--- Watcher Service Started ---")
-    print(f"Watching for .xyz files in: ./{XYZ_INPUT_FOLDER}/")
+    supported_extensions = ('.xyz', '.pcd', 'ply', '.csv', '.xlsx', '.xls')
+    print(f"Watching for {', '.join(supported_extensions)} files in: ./{XYZ_INPUT_FOLDER}/")
     print("Press Ctrl+C to stop the service.")
 
     # Ensure necessary folders exist
@@ -642,13 +650,13 @@ def start_watcher_service():
     
     # Perform initial cleanup
     manage_archives(ARCHIVE_BASE_FOLDER, ARCHIVE_CLEANUP_DAYS)
-
+    
     try:
         while True:
             # Find the first .xyz file in the input directory
             found_file = None
             for filename in sorted(os.listdir(XYZ_INPUT_FOLDER)): # sorted ensures FIFO processing
-                if filename.lower().endswith(".xyz"):
+                if filename.lower().endswith(supported_extensions):
                     found_file = filename
                     break
             
