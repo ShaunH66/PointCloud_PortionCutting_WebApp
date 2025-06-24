@@ -11,6 +11,9 @@ try:
         plot_area_profile,
         plot_cumulative_weight,
         calculate_slice_profile,
+        start_o3d_visualization,
+        launch_o3d_viewer_with_cuts,
+        _open3d_installed,
         FLOAT_EPSILON
     )
 except ImportError as e:
@@ -86,8 +89,53 @@ with st.sidebar:
         file_id = f"{uploaded_file.name}-{uploaded_file.size}"
         load_payload_from_source(uploaded_file, file_id)
 
-    st.markdown("---")
+    # --- Open3D Action Buttons ---
+    if "payload" in st.session_state:
+        st.markdown("---")
+        st.subheader("Interactive 3D Viewers\nRequires Open3D Library")
+        
+        if _open3d_installed:
+            payload = st.session_state.payload
+            display_cloud = payload.get("processed_point_cloud_for_display_df")
+            calc_results = payload.get("calculation_results")
 
+            # Button for Fly-Around View
+            if st.button("🚁 Fly Around Cloud", use_container_width=True):
+                if display_cloud is not None and not display_cloud.empty:
+                    start_o3d_visualization(display_cloud)
+                else:
+                    st.warning("No point cloud data loaded to visualize.")
+
+            # Button for View with Cuts
+            if st.button("👁️ View with Cuts", use_container_width=True):
+                if display_cloud is not None and not display_cloud.empty and calc_results:
+                    # For Open3D, we must use the original, real-world coordinates
+                    original_portions = calc_results.get("portions", [])
+                    scanner_offset = calc_results.get('y_offset_for_plot', 0.0)
+                    
+                    o3d_portions = []
+                    for p in original_portions:
+                        p_copy = p.copy()
+                        p_copy['display_start_y'] += scanner_offset
+                        p_copy['display_end_y'] += scanner_offset
+                        if 'cut_y' in p_copy:
+                            p_copy['cut_y'] += scanner_offset
+                        o3d_portions.append(p_copy)
+                    
+                    launch_o3d_viewer_with_cuts(
+                        display_cloud,
+                        o3d_portions,
+                        calc_results.get("calc_start_y", 0) + scanner_offset,
+                        calc_results.get("calc_end_y", 0) + scanner_offset,
+                        0
+                    )
+                else:
+                    st.warning("Cannot show cuts: Point cloud or calculation results are missing.")
+        else:
+            st.warning("Open3D library not installed. 3D viewers are disabled.", icon="⚠️")
+    
+    st.markdown("---")
+       
     # --- Display Status and Clear Button ---
     if "payload" in st.session_state:
         st.success("Data is currently loaded.")
@@ -291,4 +339,4 @@ else:
         st.json(params, expanded=True)
         st.subheader("Processing Log")
         st.text_area("Log", "".join(
-            [f"{msg}\n" for msg in pipeline_log]), height=400, disabled=True, key="log_details_view")
+            [f"{msg}\n" for msg in pipeline_log]), height=600, disabled=True, key="log_details_view")
