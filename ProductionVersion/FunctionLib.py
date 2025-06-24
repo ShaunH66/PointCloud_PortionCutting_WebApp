@@ -7,6 +7,8 @@ from shapely.geometry import Polygon, MultiPolygon
 from sklearn.decomposition import PCA
 import alphashape
 import sys
+import tempfile
+import os
 
 _open3d_installed = False
 try:
@@ -22,6 +24,102 @@ DEFAULT_ALPHASHAPE_SLICE_VOXEL = 0.5
 DEFAULT_TARGET_WEIGHT = 100.0  # Default target weight in grams
 DEFAULT_WEIGHT_TOLERANCE = 0.0
 DEFAULT_SLICE_THICKNESS = 0.5
+
+
+def load_point_cloud_from_file(file_path):
+    """
+    Loads a point cloud from various file types (XYZ, PCD, PLY, CSV, XLSX, XLS)
+    into a NumPy array.
+
+    Args:
+        file_path (str): The full path to the point cloud file.
+
+    Returns:
+        np.ndarray: An Nx3 NumPy array of points, or None if loading fails.
+    """
+    if not os.path.exists(file_path):
+        print(f"ERROR: File not found at '{file_path}'")
+        return None
+
+    # Get the file extension and convert to lowercase
+    file_name = os.path.basename(file_path)
+    file_ext = os.path.splitext(file_name)[1].lower()
+
+    points_array = None
+    df = None
+
+    try:
+        # --- Open3D Supported Formats (Fastest) ---
+        if file_ext in ['.xyz', '.pcd', '.ply']:
+            if not _open3d_installed:
+                print(f"WARNING: Open3D not installed. Cannot load '{file_ext}' file. Attempting fallback...")
+            else:
+                pcd = o3d.io.read_point_cloud(file_path)
+                if pcd.has_points():
+                    points_array = np.asarray(pcd.points)
+                    print(f"Successfully loaded {len(points_array)} points from '{file_name}' using Open3D.")
+                    return points_array
+                else:
+                    print(f"WARNING: Open3D read '{file_name}' but it was empty. Attempting pandas fallback for .xyz.")
+
+        # --- Pandas Supported Formats ---
+        if file_ext == '.xyz' or file_ext == '.csv':
+            # This serves as a fallback for .xyz if Open3D fails, or primary for .csv
+            print(f"Attempting to load '{file_name}' using pandas...")
+            try:
+                # First, try to find 'x', 'y', 'z' columns
+                temp_df = pd.read_csv(file_path)
+                temp_df.columns = [c.lower() for c in temp_df.columns]
+                if {'x', 'y', 'z'}.issubset(temp_df.columns):
+                    df = temp_df[['x', 'y', 'z']]
+                else:
+                    raise ValueError("Named columns not found, trying space-delimited.")
+            except (ValueError, UnicodeDecodeError):
+                # If that fails, assume it's a simple space-delimited file with no header
+                df = pd.read_csv(file_path, sep=r'\s+', header=None, usecols=[0, 1, 2], names=['x', 'y', 'z'])
+
+        elif file_ext in ['.xlsx', '.xls']:
+            print(f"Attempting to load Excel file '{file_name}'...")
+            try:
+                # Use openpyxl engine for modern Excel files
+                engine = 'openpyxl' if file_ext == '.xlsx' else None
+                temp_df = pd.read_excel(file_path, engine=engine)
+                temp_df.columns = [str(c).lower() for c in temp_df.columns]
+                if {'x', 'y', 'z'}.issubset(temp_df.columns):
+                    df = temp_df[['x', 'y', 'z']]
+                elif temp_df.shape[1] >= 3:
+                    print("WARNING: Columns 'x,y,z' not found. Assuming first 3 columns.")
+                    df = temp_df.iloc[:, 0:3]
+                    df.columns = ['x', 'y', 'z']
+                else:
+                    raise ValueError("Not enough columns in Excel file.")
+            except ImportError:
+                 print("ERROR: Reading Excel files requires 'openpyxl'. Please run 'pip install openpyxl'.")
+                 return None
+        
+        else:
+            print(f"ERROR: Unsupported file type '{file_ext}'.")
+            return None
+
+        # --- Final Conversion and Validation ---
+        if df is not None:
+            # Coerce to numeric and drop any rows that failed conversion
+            for col in ['x', 'y', 'z']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            df = df.dropna()
+            
+            if not df.empty:
+                points_array = df.to_numpy()
+                print(f"Successfully loaded {len(points_array)} points from '{file_name}' using pandas.")
+            else:
+                 print(f"ERROR: No valid numeric XYZ data found in '{file_name}'.")
+
+    except Exception as e:
+        print(f"An unexpected error occurred while loading '{file_name}': {e}")
+        return None
+
+    return points_array
+
 
 
 def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = False) -> pd.DataFrame:
@@ -57,6 +155,7 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult):
     try:
         tree = o3d.geometry.KDTreeFlann(o3d_pcd)
         dists = []
+        #samples = min(500, n_pts)
         samples = min(1000, n_pts)
         indices = np.random.choice(n_pts, size=samples, replace=False)
         for i_idx in indices:  # Renamed i to i_idx
