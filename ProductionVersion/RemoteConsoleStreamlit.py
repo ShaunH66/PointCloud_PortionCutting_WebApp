@@ -211,11 +211,13 @@ else:
     if calc_results:
         yield_percent = calc_results.get('yield_percentage', 0)
         waste_grams = calc_results.get('waste_weight', 0)
-
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        kpi_col1.metric("✅ Yield", f"{yield_percent:.2f} %")
-        kpi_col2.metric("🗑️ Waste / Balance Portion", f"{waste_grams:.2f} g")
-
+        product_length_mm = calc_results.get('product_length', 0)
+        
+        kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
+        kpi_col1.metric("✅ Yield", f"{yield_percent:.3f} %")
+        kpi_col2.metric("🗑️ Waste / Balance Portion", f"{waste_grams:.3f} g")
+        kpi_col3.metric("📏 Product Length", f"{product_length_mm:.3f} mm")
+    
         portions = calc_results.get("portions", [])
         total_portions = len(portions) - 1 if portions else 0
         total_weight_calc = sum(p['weight']
@@ -225,11 +227,11 @@ else:
 
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
         kpi_col1.metric("🎯 Target Weight",
-                        f"{params.get('target_weight', 0):.2f} g")
+                        f"{params.get('target_weight', 0):.3f} g")
         kpi_col2.metric("Good Portions", f"{total_portions}")
-        kpi_col3.metric("Avg Portion Wt.", f"{avg_portion_weight:.2f} g")
+        kpi_col3.metric("Avg Portion Wt.", f"{avg_portion_weight:.3f} g")
         kpi_col4.metric("Total Loaf Wt.",
-                        f"{total_weight_calc / 1000:.2f} kg")
+                        f"{total_weight_calc / 1000:.3f} kg")
 
     st.markdown("---")
 
