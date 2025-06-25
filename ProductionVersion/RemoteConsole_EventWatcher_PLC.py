@@ -155,6 +155,7 @@ PLC_WRITE_TAG_MAPPING = {
     "first_portion_weight": "PC_First_Portion_Weight",           # PLC Tag Type: REAL
     "calculated_density_g_cm3": "PC_Calculated_Density",         # PLC Tag Type: REAL
     "total_loaf_length": "PC_Total_Loaf_Length",                 # PLC Tag Type: REAL
+    "yield_percentage" : "PC_yield_percentage",                  # PLC Tag Type: REAL
 }
 
 # =============================================================================
@@ -546,13 +547,6 @@ def process_single_file(xyz_file_path, log_messages):
             total_weight_of_good_portions = sum(p['weight'] for p in original_portions[1:])
             avg_weight = total_weight_of_good_portions / total_good_portions if total_good_portions > 0 else 0.0
             density_g_cm3 = calc_results.get("density", 0.0) * 1000.0
-            
-            # Calculate total loaf length from the normalized display data
-            total_loaf_length = 0.0
-            if len(original_portions) > 0:
-                start_y = original_portions[0]['display_start_y']
-                end_y = original_portions[-1]['display_end_y']
-                total_loaf_length = end_y - start_y
                 
             single_results_to_write = {
                 "completion_counter": new_counter,
@@ -560,7 +554,8 @@ def process_single_file(xyz_file_path, log_messages):
                 "average_portion_weight": avg_weight,
                 "first_portion_weight": first_portion_weight,
                 "calculated_density_g_cm3": density_g_cm3,
-                "total_loaf_length": total_loaf_length,
+                "total_loaf_length": product_length,
+                "yield_percentage" : yield_percentage
             }
             
             # --- B. Prepare the list of portion dictionaries for the UDT array ---
