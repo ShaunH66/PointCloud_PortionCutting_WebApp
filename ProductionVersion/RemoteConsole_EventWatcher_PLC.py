@@ -489,7 +489,7 @@ def process_single_file(xyz_file_path, log_messages):
             log("    ...Portion calculation failed or returned no results.")
             return
 
-        log("    ...Calculating yield, waste, and length analysis...")
+        log("\n    ...Calculating yield, waste, and length analysis...")
         portions = calc_results.get("portions", [])
         if portions:
             
