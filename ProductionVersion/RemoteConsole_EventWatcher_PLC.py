@@ -488,7 +488,7 @@ def process_single_file(xyz_file_path, log_messages):
             log("    ...Portion calculation failed or returned no results.")
             return
 
-        log("\n    ...Calculating yield and waste analysis...")
+        log("    ...Calculating yield, waste, and length analysis...")
         portions = calc_results.get("portions", [])
         if portions:
             
@@ -512,12 +512,21 @@ def process_single_file(xyz_file_path, log_messages):
             # Avoid division by zero
             yield_percentage = (good_weight / total_loaf_weight * 100) if total_loaf_weight > 0 else 0
             
+            product_length = 0.0
+            if not final_display_cloud.empty:
+                min_y = final_display_cloud['y'].min()
+                max_y = final_display_cloud['y'].max()
+                product_length = max_y - min_y
+            
+            # --- Add all new metrics to the results dictionary ---
             calc_results['total_loaf_weight'] = total_loaf_weight
             calc_results['waste_weight'] = waste_weight
             calc_results['good_weight'] = good_weight
             calc_results['good_portions_count'] = good_portions_count
             calc_results['yield_percentage'] = yield_percentage
-            log(f"    ...Yield: {yield_percentage:.2f}%, Good Portions: {good_portions_count}, Waste: {waste_weight:.2f}g")
+            calc_results['product_length'] = product_length 
+            
+            log(f"    ...Product Length: {product_length:.2f}mm, Yield: {yield_percentage:.2f}%, Good Portions: {good_portions_count}, Waste: {waste_weight:.2f}g")
         
         # --- Step 7: Write Results back to PLC ---
         if PLC_MODE and calc_results:
