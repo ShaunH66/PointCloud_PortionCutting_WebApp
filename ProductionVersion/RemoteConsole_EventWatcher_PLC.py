@@ -107,25 +107,33 @@ XYZ_INPUT_FOLDER = "xyz_input"          # Folder to watch for new .xyz files
 XYZ_PROCESSED_FOLDER = "xyz_processed"  # Folder to move files to after processing
 
 # 7. PLC Configuration
-PLC_MODE = False              # SET TO True TO READ PARAMS FROM PLC
+PLC_MODE = False                 # SET TO True TO READ PARAMS FROM PLC
 PLC_IP_ADDRESS = "192.168.1.10"  # IMPORTANT: Change to your PLC's IP address
 PLC_PROCESSOR_SLOT = 0           # Slot of the CompactLogix/ControlLogix processor
 PLC_PORTION_ARRAY_SIZE = 100     # PLC max array size for portions
+
+# PLC Status and Heartbeat Configuration
+PLC_HEARTBEAT_TAG = "PC_Heartbeat"  # PLC Tag Type: DINT
+PLC_STATUS_TAG = "PC_Status"        # PLC Tag Type: DINT
+STATUS_IDLE = 1
+STATUS_PROCESSING = 2
+STATUS_SUCCESS = 3
+STATUS_ERROR = 4
 
 # This dictionary maps your script's parameter names to the PLC tag names.
 # IMPORTANT: You MUST update the PLC tag names on the right side.
 PLC_TAG_MAPPING = {
     # Parameter Name in this Script : "PLC_Tag_Name"
-    "target_weight": "HMI_Target_Weight",           # e.g., a REAL tag
-    "total_weight": "HMI_Total_Weight",             # e.g., a REAL tag
-    "start_trim": "HMI_Start_Trim",                 # e.g., a REAL tag
-    "end_trim": "HMI_End_Trim",                     # e.g., a REAL tag
-    "weight_tolerance": "HMI_Weight_Tolerance",     # e.g., a REAL tag
-    "no_interp": "HMI_No_Interpolation_On",         # e.g., a BOOL tag (0 or 1)
-    "pca_align": "HMI_PCA_Align_On",                # e.g., a BOOL tag (0 or 1)
-    "blade_thickness": "HMI_Blade_Thickness",       # e.g., a REAL tag (0.0 to disable)
-    "slice_thickness": "HMI_Slice_Thickness",       # e.g., a REAL tag
-    "completion_counter": "PC_Completion_Counter",  # e.g., a DINT tag
+    "target_weight": "HMI_Target_Weight",           # PLC Tag Type: REAL
+    "total_weight": "HMI_Total_Weight",             # PLC Tag Type: REAL
+    "start_trim": "HMI_Start_Trim",                 # PLC Tag Type: REAL
+    "end_trim": "HMI_End_Trim",                     # PLC Tag Type: REAL
+    "weight_tolerance": "HMI_Weight_Tolerance",     # PLC Tag Type: REAL
+    "no_interp": "HMI_No_Interpolation_On",         # PLC Tag Type: BOOL (0 or 1)
+    "pca_align": "HMI_PCA_Align_On",                # PLC Tag Type: BOOL (0 or 1)
+    "blade_thickness": "HMI_Blade_Thickness",       # PLC Tag Type: REAL (0.0 to disable)
+    "slice_thickness": "HMI_Slice_Thickness",       # PLC Tag Type: REAL
+    "completion_counter": "PC_Completion_Counter",  # PLC Tag Type: DINT
 
     # 0 = "Calculate from Total Weight & Volume"
     # 1 = "Input Directly"
@@ -195,7 +203,31 @@ def manage_archives(base_folder, days_to_keep):
     else:
         print("    ...No old archives found to delete based on filename timestamps.")
         
+        
+def update_plc_status(ip_address, slot, heartbeat_val=None, status_val=None):
+    """Writes a new heartbeat and/or status value to the PLC."""
+    if not PLC_MODE or PLC is None:
+        return
 
+    tags_to_write = []
+    if heartbeat_val is not None:
+        tags_to_write.append((PLC_HEARTBEAT_TAG, heartbeat_val))
+    if status_val is not None:
+        tags_to_write.append((PLC_STATUS_TAG, status_val))
+
+    if not tags_to_write:
+        return
+
+    try:
+        with PLC() as comm:
+            comm.IPAddress = ip_address
+            comm.ProcessorSlot = slot
+            comm.Write(tags_to_write)
+    except Exception as e:
+        # Don't crash the main loop if the heartbeat fails, just print a warning
+        print(f"\nWARNING: Could not update PLC status/heartbeat. Error: {e}")
+        
+        
 def get_params_from_plc(ip_address, slot, tag_map, log_func):
     """Connects to a Rockwell PLC and reads parameter values based on a tag map."""
     if PLC is None:
@@ -456,6 +488,37 @@ def process_single_file(xyz_file_path, log_messages):
             log("    ...Portion calculation failed or returned no results.")
             return
 
+        log("\n    ...Calculating yield and waste analysis...")
+        portions = calc_results.get("portions", [])
+        if portions:
+            
+            # Get the target weight from the parameters used for this run
+            target_w = current_pipeline_params.get("target_weight")
+
+            good_weight = 0
+            waste_weight = 0
+            good_portions_count = 0
+            
+            # Iterate through each portion and classify it
+            for p in portions:
+                if p['weight'] >= target_w:
+                    good_weight += p['weight']
+                    good_portions_count += 1
+                else:
+                    waste_weight += p['weight']
+            
+            total_loaf_weight = good_weight + waste_weight
+            
+            # Avoid division by zero
+            yield_percentage = (good_weight / total_loaf_weight * 100) if total_loaf_weight > 0 else 0
+            
+            calc_results['total_loaf_weight'] = total_loaf_weight
+            calc_results['waste_weight'] = waste_weight
+            calc_results['good_weight'] = good_weight
+            calc_results['good_portions_count'] = good_portions_count
+            calc_results['yield_percentage'] = yield_percentage
+            log(f"    ...Yield: {yield_percentage:.2f}%, Good Portions: {good_portions_count}, Waste: {waste_weight:.2f}g")
+        
         # --- Step 7: Write Results back to PLC ---
         if PLC_MODE and calc_results:
             PLC_write_starttime = time.time()
@@ -650,9 +713,16 @@ def start_watcher_service():
     
     # Perform initial cleanup
     manage_archives(ARCHIVE_BASE_FOLDER, ARCHIVE_CLEANUP_DAYS)
-    
+    heartbeat_counter = 0
     try:
+        # Set initial status to IDLE
+        update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, heartbeat_val=heartbeat_counter, status_val=STATUS_IDLE)
+        
         while True:
+            # Increment heartbeat and write it to the PLC on every loop
+            heartbeat_counter = (heartbeat_counter + 1) % 2147483647
+            update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, heartbeat_val=heartbeat_counter)
+            
             # Find the first .xyz file in the input directory
             found_file = None
             for filename in sorted(os.listdir(XYZ_INPUT_FOLDER)): # sorted ensures FIFO processing
@@ -661,33 +731,41 @@ def start_watcher_service():
                     break
             
             if found_file:
-                file_path = os.path.join(XYZ_INPUT_FOLDER, found_file)
+                # --- File Found: Start Processing ---
+                update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, status_val=STATUS_PROCESSING)
                 
+                file_path = os.path.join(XYZ_INPUT_FOLDER, found_file)
                 # Process the file
                 log_capture = []
                 success = process_single_file(file_path, log_capture)
                 
                 # Move the file after processing
                 if success:
+                    update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, status_val=STATUS_SUCCESS)
                     destination_path = os.path.join(XYZ_PROCESSED_FOLDER, found_file)
                     print(f"--- Moving processed file to: {destination_path} ---")
                     shutil.move(file_path, destination_path)
                 else:
                     # Optional: Move failed files to an 'error' folder instead of 'processed'
+                    update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, status_val=STATUS_ERROR)
                     error_folder = os.path.join(XYZ_PROCESSED_FOLDER, "error")
                     os.makedirs(error_folder, exist_ok=True)
                     destination_path = os.path.join(error_folder, found_file)
                     print(f"--- Moving FAILED file to: {destination_path} ---")
                     shutil.move(file_path, destination_path)
 
+                # Set status back to IDLE, ready for the next file
+                update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, status_val=STATUS_IDLE)
             else:
                 # If no file is found, wait before scanning again
-                sys.stdout.write(f"\rNo new files found. Waiting... ({time.strftime('%H:%M:%S')})")
+                sys.stdout.write(f"\rNo new files found. Waiting... (Heartbeat: {heartbeat_counter}) ({time.strftime('%H:%M:%S')})")
                 sys.stdout.flush()
                 time.sleep(WATCHER_INTERVAL_SECONDS)
 
     except KeyboardInterrupt:
         print("\n--- Watcher Service Stopped by User ---")
+        # Attempt to set a "stopped" status code if possible
+        update_plc_status(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, status_val=0) # 0 = Stopped
     except Exception as e:
         print(f"\n--- An unexpected error occurred: {e} ---")
 
