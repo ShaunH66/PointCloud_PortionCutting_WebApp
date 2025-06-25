@@ -22,6 +22,7 @@ except ImportError as e:
 
 # --- Configuration ---
 DEFAULT_PAYLOAD_FILE = "latest_run_payload.pkl"
+ARCHIVE_BASE_FOLDER = "run_archives"
 
 # --- App Layout ---
 st.set_page_config(
@@ -52,6 +53,24 @@ def load_payload_from_source(file_source, source_id):
         st.error(f"Failed to load or parse payload file: {e}")
         
         
+def get_recent_runs(archive_folder):
+    """Scans the archive folder and returns a sorted list of recent payload files."""
+    recent_runs = []
+    if os.path.isdir(archive_folder):
+        for filename in os.listdir(archive_folder):
+            if filename.startswith("payload_") and filename.endswith(".pkl"):
+                file_path = os.path.join(archive_folder, filename)
+                try:
+                    # Get the file's modification time
+                    mod_time = os.path.getmtime(file_path)
+                    recent_runs.append((filename, file_path, mod_time))
+                except OSError:
+                    continue # Skip files that might be in the process of being written
+    # Sort by modification time, newest first
+    recent_runs.sort(key=lambda x: x[2], reverse=True)
+    return recent_runs
+
+
 # --- Main App Body ---
 st.title("📊 Point Cloud Portioning Dashboard")
 st.markdown("---")
@@ -75,6 +94,32 @@ with st.sidebar:
                 load_payload_from_source(f, file_id)
         else:
             st.warning(f"Default file not found: '{DEFAULT_PAYLOAD_FILE}'. Run the headless script first.")
+
+    st.markdown("---")
+    
+    st.subheader("📁 Recent Runs")
+    recent_runs_list = get_recent_runs(ARCHIVE_BASE_FOLDER)
+    
+    if not recent_runs_list:
+        st.caption("No archived runs found.")
+    else:
+        # Create a dictionary for the selectbox: {Display Name: File Path}
+        # Display name is just the filename without the .pkl extension
+        run_options = {os.path.splitext(fname)[0]: fpath for fname, fpath, _ in recent_runs_list[:15]} # Show latest 15
+        
+        selected_run_path = st.selectbox(
+            "Select a run to load:", 
+            options=list(run_options.keys()),
+            index=None, # Default to no selection
+            placeholder="Choose a past run..."
+        )
+        
+        if selected_run_path:
+            # When a user selects a run, load it
+            file_path = run_options[selected_run_path]
+            with open(file_path, "rb") as f:
+                file_id = f"{file_path}-{os.path.getmtime(file_path)}"
+                load_payload_from_source(f, file_id)
 
     st.markdown("---")
     
@@ -164,6 +209,13 @@ else:
     # --- Header with Key Performance Indicators (KPIs) ---
     st.header("📈 Run Overview & Key Metrics")
     if calc_results:
+        yield_percent = calc_results.get('yield_percentage', 0)
+        waste_grams = calc_results.get('waste_weight', 0)
+
+        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+        kpi_col1.metric("✅ Yield", f"{yield_percent:.2f} %")
+        kpi_col2.metric("🗑️ Waste / Balance Portion", f"{waste_grams:.2f} g")
+
         portions = calc_results.get("portions", [])
         total_portions = len(portions) - 1 if portions else 0
         total_weight_calc = sum(p['weight']
@@ -172,7 +224,7 @@ else:
             total_weight_calc - portions[0]['weight']) / total_portions if total_portions > 0 else 0
 
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        kpi_col1.metric("Target Weight",
+        kpi_col1.metric("🎯 Target Weight",
                         f"{params.get('target_weight', 0):.2f} g")
         kpi_col2.metric("Good Portions", f"{total_portions}")
         kpi_col3.metric("Avg Portion Wt.", f"{avg_portion_weight:.2f} g")
