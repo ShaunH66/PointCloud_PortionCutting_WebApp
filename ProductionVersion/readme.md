@@ -19,7 +19,10 @@ This repository contains two-part automation for calculating optimal cutting por
     - Auto Downsampling: Manages large point clouds by reducing point count to a set threshold.
     - Radius Outlier Removal (ROR): Cleans noisy data with an auto-estimation mode for the radius parameter.
   
-**- Calculation:** Calculates portion weights based on volumetric slicing, with support for trims, blade kerf, and interpolation. "Convex Hull" OR "Alpha Shape" algorithms available for volumetric slicing. 
+**- Calculation:** 
+
+        - Calculates portion weights based on volumetric slicing, with support for trims, blade kerf, and interpolation etc. 
+        - "Convex Hull" OR "Alpha Shape" algorithms available for volumetric slicing. 
 
 **- PLC Integration (pylogix):**
 
