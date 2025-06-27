@@ -21,8 +21,8 @@ This repository contains two-part automation for calculating optimal cutting por
   
 **- Calculation:** 
 
-        - Calculates portion weights based on volumetric slicing, with support for trims, blade kerf, and interpolation etc. 
-        - "Convex Hull" OR "Alpha Shape" algorithms available for volumetric slicing. 
+    - Calculates portion weights based on volumetric slicing, with support for trims, blade kerf, and interpolation etc. 
+    - "Convex Hull" OR "Alpha Shape" algorithms available for volumetric slicing. 
 
 **- PLC Integration (pylogix):**
 
