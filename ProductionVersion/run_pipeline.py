@@ -16,7 +16,7 @@ except ImportError:
     PLC = None
     
 try:
-    from FunctionLib import (
+    from functionlib import (
         align_point_cloud_with_pca,
         estimate_ror_radius_util_o3d,
         apply_ror_filter_to_df,
