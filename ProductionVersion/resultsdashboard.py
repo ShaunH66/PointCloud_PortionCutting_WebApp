@@ -6,7 +6,7 @@ import os
 import plotly.graph_objects as go
 
 try:
-    from FunctionLib import (
+    from functionlib import (
         plot_3d_loaf,
         plot_area_profile,
         plot_cumulative_weight,
