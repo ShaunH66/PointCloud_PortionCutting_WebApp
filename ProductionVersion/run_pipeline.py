@@ -81,9 +81,9 @@ DEFAULT_PIPELINE_PARAMS = {
     "ror_radius": 5.0,                     # Fallback radius if estimation is off or fails
 
     # --- Calculation Parameters ---
-    "waste_redistribution": True,          # Enable waste redistribution
+    "waste_redistribution": False,         # Enable waste redistribution
     "total_weight": 3333.3,                # Total weight of the loaf in grams
-    "target_weight": 1000.0,               # Target weight for each portion
+    "target_weight": 250.0,                # Target weight for each portion
     "slice_thickness": 0.5,                # Thickness of each slice in mm
     "no_interp": True,                     # Disable interpolation for slice calculations
     "flat_bottom": False,                  # Use flat bottom mode
