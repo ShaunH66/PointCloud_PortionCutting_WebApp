@@ -4,6 +4,7 @@ import pandas as pd
 import pickle
 import os
 import plotly.graph_objects as go
+import sys
 
 try:
     from functionlib import (
@@ -212,22 +213,52 @@ else:
         yield_percent = calc_results.get('yield_percentage', 0)
         waste_grams = calc_results.get('waste_weight', 0)
         product_length_mm = calc_results.get('product_length', 0)
+        waste_redistribution = params.get('waste_redistribution', False)
         
         kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
         kpi_col1.metric("✅ Yield", f"{yield_percent:.3f} %")
         kpi_col2.metric("🗑️ Waste / Balance Portion", f"{waste_grams:.3f} g")
         kpi_col3.metric("📏 Product Length", f"{product_length_mm:.3f} mm")
+        if waste_redistribution:
+            kpi_col4.metric("♻️ Waste Redistribution", "Enabled")
+        else:
+            kpi_col4.metric("♻️ Waste Redistribution", "Disabled")
     
         portions = calc_results.get("portions", [])
-        total_portions = len(portions) - 1 if portions else 0
+        if not waste_redistribution:
+            total_portions = len(portions) - 1 if portions else 0
+        else:
+            total_portions = len(portions) if portions else 0
+            
         total_weight_calc = sum(p['weight']
                                 for p in portions) if portions else 0
         avg_portion_weight = (
             total_weight_calc - portions[0]['weight']) / total_portions if total_portions > 0 else 0
 
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        kpi_col1.metric("🎯 Target Weight",
-                        f"{params.get('target_weight', 0):.3f} g")
+        
+        if waste_redistribution: 
+            optimized_target = calc_results.get('optimized_target_weight')
+            original_target = params.get('target_weight', 0)
+            if optimized_target is not None:
+                delta_str = f"{optimized_target - original_target:+.2f}g vs Original {original_target:.2f}g"
+                kpi_col1.metric(
+                        label="⚖️ Optimized New Waste Redistribution Target", 
+                        value=f"{optimized_target:.2f} g",
+                        delta=delta_str,
+                        delta_color="normal"
+                    )
+            else:
+                kpi_col1.metric(
+                    label="⚖️ Original Target", 
+                    value=f"{original_target:.2f} g",
+                    delta="Optimization limit exceeded",
+                    delta_color="inverse" 
+                )          
+        else:
+            kpi_col1.metric("🎯 Target Weight",
+                                f"{params.get('target_weight', 0):.3f} g")
+            
         kpi_col2.metric("Good Portions", f"{total_portions}")
         kpi_col3.metric("Avg Portion Wt.", f"{avg_portion_weight:.3f} g")
         kpi_col4.metric("Total Loaf Wt.",
