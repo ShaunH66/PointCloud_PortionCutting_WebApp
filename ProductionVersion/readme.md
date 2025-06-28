@@ -1,4 +1,4 @@
-**Point Cloud Portioning & Slicing software.**
+**Point Cloud Portioning & Slicing Software.**
 ```
 Includes Rockwell PLC industrial protocol read, write & error handling. 
 Siemens & Mitsubishi support coming soon.
