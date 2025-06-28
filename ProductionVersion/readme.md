@@ -1,4 +1,8 @@
-**Point Cloud Portioning & Slicing software. includes industrial protocol read & write handling**
+**Point Cloud Portioning & Slicing software.**
+```
+Includes Rockwell PLC industrial protocol read, write & error handling. 
+Siemens & Mitsubishi support coming soon.
+```
 
 This repository contains two-part automation for calculating optimal cutting portions from 3D point cloud data. The system is designed for industrial protocol applications where a "headless" processing engine is triggered by new scan files, and a separate, user-friendly web interface is used for viewing and analyzing the results.
 
