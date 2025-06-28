@@ -9,6 +9,7 @@ import alphashape
 import sys
 import tempfile
 import os
+import traceback
 
 _open3d_installed = False
 try:
@@ -966,4 +967,185 @@ def launch_o3d_viewer_with_cuts(points_df, portions_data, calc_start_y_from_res,
     except Exception as e:
         print(f"Failed to launch Open3D window: {e}")
     finally:
-        print("Open3D window closed.")
+        print("Open3D window closed.")    
+
+
+def calculate_with_waste_redistribution(
+    points_df, total_w, target_w, slice_inc,
+    start_trim, end_trim, blade_thick,
+    max_target_weight_increase_percent=99.0,
+    direct_density_g_mm3=None,
+    verbose_log_func=None,
+    **kwargs
+):
+
+    calc_t_start = time.time()
+    log = verbose_log_func if verbose_log_func else lambda msg, end_line=True: None
+    
+    res = {
+        "portions": [], "total_volume": 0.0, "density": 0.0, "status": "Init Err",
+        "calc_time": 0.0, "volume_profile": {}, "sorted_y_starts": np.array([]),
+        "calc_start_y": 0.0, "calc_end_y": 0.0, "y_offset_for_plot": 0.0,
+        "density_source_message": "", "optimization_log": []
+    }
+
+    log("Portion calculation (Waste Redistribution - Cumulative Weight): Starting...")
+    
+    # --- 1. Initial Checks ---
+    if points_df is None or points_df.empty:
+        res["status"] = "Err: No cloud data for calculation."; log(res["status"]); return res
+    
+    loaf_min_y, loaf_max_y = points_df['y'].min(), points_df['y'].max()
+    calc_start_y = loaf_min_y + start_trim
+    calc_end_y = loaf_max_y - end_trim
+    res.update({"calc_start_y": calc_start_y, "calc_end_y": calc_end_y})
+
+    if calc_start_y >= calc_end_y - FLOAT_EPSILON:
+        res["status"] = f"Err: Start trim ({start_trim}mm) is beyond loaf length."; log(res["status"]); return res
+
+    try:
+        # --- 2. Volume Profiling ---
+        _vp_start_t = time.time()
+        log("Preparing point cloud and profiling volume...")
+        
+        points_df_sorted = points_df.sort_values(by='y', kind='mergesort', ignore_index=True)
+        y_coords_np = points_df_sorted['y'].to_numpy()
+        x_coords_np = points_df_sorted['x'].to_numpy()
+        z_coords_np = points_df_sorted['z'].to_numpy()
+        
+        y_steps = np.arange(loaf_min_y, loaf_max_y, slice_inc)
+        vp_prof = {}
+
+        slice_profile_args = {
+            'flat_bottom': kwargs.get('flat_bottom', False), 'top_down': kwargs.get('top_down_scan', False),
+            'area_method': kwargs.get('area_calc_method', 'Convex Hull'), 'alpha_value': kwargs.get('alpha_shape_param', 0.02),
+            'alphashape_slice_voxel_param': kwargs.get('alphashape_slice_voxel_param', 0.5)
+        }
+        
+        for y_s in y_steps:
+            y_e = y_s + slice_inc
+            start_idx, end_idx = np.searchsorted(y_coords_np, [y_s, y_e], side='left')
+            if start_idx < end_idx:
+                area, _, _, _ = calculate_slice_profile(
+                    x_coords_np[start_idx:end_idx], z_coords_np[start_idx:end_idx], **slice_profile_args
+                )
+                vp_prof[y_s] = area * slice_inc
+        
+        tot_vol = sum(vp_prof.values())
+        vp_time = time.time() - _vp_start_t
+        log(f"Volume profile done ({vp_time:.2f}s). Est. Total Vol: {tot_vol/1000.0:.1f} cm³.")
+        
+        # --- 3. Density Calculation ---
+        if direct_density_g_mm3:
+            dens = direct_density_g_mm3
+            res["density_source_message"] = f"Using direct density: {dens * 1000.0:.3f} g/cm³."
+        else:
+            if tot_vol <= 0: raise ValueError("Total volume is zero.")
+            if total_w <= 0: raise ValueError("Total weight must be >0 to calculate density.")
+            dens = total_w / tot_vol
+            res["density_source_message"] = f"Calculated density: {dens * 1000.0:.3f} g/cm³."
+        
+        res.update({"total_volume": tot_vol, "density": dens, "volume_profile": vp_prof})
+        sorted_y_s_arr = np.array(sorted(vp_prof.keys()))
+        res["sorted_y_starts"] = sorted_y_s_arr
+        
+        # --- 4. Waste Redistribution Logic ---
+        opt_log = []
+        
+        total_usable_volume = recalculate_portion_volume(vp_prof, sorted_y_s_arr, slice_inc, calc_start_y, calc_end_y)
+        total_usable_weight = total_usable_volume * dens
+        opt_log.append(f"Total usable loaf weight (after trims): {total_usable_weight:.2f}g")
+
+        if total_usable_weight < target_w:
+            raise ValueError("Total usable weight is less than a single target portion.")
+        
+        num_portions_to_make = int(total_usable_weight // target_w)
+        opt_log.append(f"Can ideally make {num_portions_to_make} portions of at least {target_w:.2f}g.")
+
+        if num_portions_to_make == 0:
+            raise ValueError("Cannot make any portions of the target weight.")
+        
+        new_target_w = total_usable_weight / num_portions_to_make
+        max_allowed_target_w = target_w * (1 + max_target_weight_increase_percent / 100.0)
+        
+        final_target_w = target_w
+        if new_target_w > max_allowed_target_w:
+            log(f"Redistribution aborted: New target ({new_target_w:.2f}g) exceeds max allowed ({max_allowed_target_w:.2f}g).")
+            opt_log.append(f"Calculated new target {new_target_w:.2f}g exceeded limit of {max_allowed_target_w:.2f}g. Reverting to original target.")
+            res['optimized_target_weight'] = None
+        else:
+            log(f"Optimal new target weight calculated: {new_target_w:.2f}g to maximize yield.")
+            opt_log.append(f"Optimal new target weight: {new_target_w:.2f}g (within {max_target_weight_increase_percent}% limit).")
+            final_target_w = new_target_w
+            res['optimized_target_weight'] = final_target_w
+
+        res["optimization_log"] = opt_log
+        
+        # --- 5. Final Cutting Logic using Cumulative Weight Profile ---
+        _cut_start_t = time.time()
+        out_portions = []
+        
+        # a. Create the cumulative weight profile for fast lookups
+        cumulative_y = [calc_start_y]
+        cumulative_w = [0.0]
+        
+        relevant_slices_mask = (sorted_y_s_arr >= calc_start_y - slice_inc) & (sorted_y_s_arr < calc_end_y)
+        for y_s in sorted_y_s_arr[relevant_slices_mask]:
+            slice_weight = vp_prof.get(y_s, 0.0) * dens
+            cumulative_w.append(cumulative_w[-1] + slice_weight)
+            cumulative_y.append(y_s + slice_inc)
+        
+        cum_w_np = np.array(cumulative_w)
+        cum_y_np = np.array(cumulative_y)
+
+        # b. Find cut points by searching the cumulative profile
+        current_y = calc_start_y
+        current_w = 0.0
+
+        for i in range(num_portions_to_make):
+            # For the last portion, the cut is simply at the very end
+            if i == num_portions_to_make - 1:
+                cut_y = calc_end_y
+            else:
+                # Find the Y-coordinate where the cumulative weight equals our target
+                target_cumulative_weight = current_w + final_target_w
+                
+                # Use np.interp to find the exact Y for the target weight.
+                # This is extremely fast and accurate.
+                cut_y = np.interp(target_cumulative_weight, cum_w_np, cum_y_np)
+
+            cut_y = min(cut_y, calc_end_y)
+            p_len = cut_y - current_y
+            
+            if p_len <= FLOAT_EPSILON: continue
+
+            # Recalculate the exact volume for this portion for maximum accuracy
+            p_vol = recalculate_portion_volume(vp_prof, sorted_y_s_arr, slice_inc, current_y, cut_y)
+            p_weight = p_vol * dens
+            
+            out_portions.append({
+                "portion_num": i + 1, "display_start_y": current_y,
+                "display_end_y": cut_y, "length": p_len, "weight": p_weight
+            })
+
+            # Update our position for the next search
+            current_y = cut_y + blade_thick
+            # Find the new starting weight by searching for the new start_y
+            current_w = np.interp(current_y, cum_y_np, cum_w_np)
+
+        cut_time = time.time() - _cut_start_t
+        res["portions"] = out_portions
+        res["status"] = f"Calculation with Waste Redistribution complete. Found {len(out_portions)} portions."
+
+    except Exception as ex:
+        res["status"] = f"Unexpected err: {ex}"
+        log(traceback.format_exc())
+    finally:
+        tot_calc_t = time.time() - calc_t_start
+        vp_time_str = f", Profile: {vp_time:.2f}s" if '_vp_start_t' in locals() else ""
+        cut_time_str = f", Cutting: {cut_time:.2f}s" if '_cut_start_t' in locals() else ""
+        res["calc_time"] = tot_calc_t
+        res["status"] += f" Total Time: {tot_calc_t:.2f}s{vp_time_str}{cut_time_str}"
+        log(res["status"])
+        
+    return res
