@@ -24,6 +24,7 @@ try:
         start_o3d_visualization,
         launch_o3d_viewer_with_cuts,
         load_point_cloud_from_file,
+        calculate_with_waste_redistribution,
         _open3d_installed,
     )
 
@@ -80,8 +81,9 @@ DEFAULT_PIPELINE_PARAMS = {
     "ror_radius": 5.0,                     # Fallback radius if estimation is off or fails
 
     # --- Calculation Parameters ---
+    "waste_redistribution": True,          # Enable waste redistribution
     "total_weight": 3333.3,                # Total weight of the loaf in grams
-    "target_weight": 500.0,                # Target weight for each portion
+    "target_weight": 1000.0,               # Target weight for each portion
     "slice_thickness": 0.5,                # Thickness of each slice in mm
     "no_interp": True,                     # Disable interpolation for slice calculations
     "flat_bottom": False,                  # Use flat bottom mode
@@ -97,6 +99,7 @@ DEFAULT_PIPELINE_PARAMS = {
     "area_calculation_method": "Convex Hull",                  # Options: "Convex Hull", "Alpha Shape"
     "alpha_shape_value": 0.02,                                 # Alpha value for alpha shape calculation   
     "alphashape_slice_voxel": 5.0,                             # Voxel size for alphashape slice calculation
+    
 }
 
 # 5. Listener Configuration
@@ -134,6 +137,7 @@ PLC_TAG_MAPPING = {
     "blade_thickness": "HMI_Blade_Thickness",       # PLC Tag Type: REAL (0.0 to disable)
     "slice_thickness": "HMI_Slice_Thickness",       # PLC Tag Type: REAL
     "completion_counter": "PC_Completion_Counter",  # PLC Tag Type: DINT
+    "waste_redistribution": "HMI_Waste_Redistribution_On", # PLC Tag Type: BOOL (0 or 1)
 
     # 0 = "Calculate from Total Weight & Volume"
     # 1 = "Input Directly"
@@ -260,7 +264,7 @@ def get_params_from_plc(ip_address, slot, tag_map, log_func):
                 tag_result = next((r for r in results if r.TagName == plc_tag), None)
                 if tag_result: #and tag_result.Status == 'Success':
                     # Convert BOOLs from 0/1 to True/False
-                    if isinstance(tag_result.Value, int) and script_param in ['no_interp', 'pca_align']:
+                    if isinstance(tag_result.Value, int) and script_param in ['no_interp', 'pca_align', 'waste_redistribution']:
                         plc_params[script_param] = bool(tag_result.Value)
                     else:
                         plc_params[script_param] = tag_result.Value
@@ -480,9 +484,18 @@ def process_single_file(xyz_file_path, log_messages):
             calculation_args["direct_density_g_mm3"] = current_pipeline_params.get(
                 "direct_density_g_cm3", 0) / 1000.0
 
-        calc_results = perform_portion_calculation(
-            points_df=df_for_calc, verbose_log_func=log, **calculation_args)
-        
+        # --- Perform Portion Calculation ---
+        # If waste redistribution is enabled, use calculate_with_waste_redistribution function
+        if current_pipeline_params.get("waste_redistribution"):
+            log("    ...Performing Portion Calculation with Waste Redistribution")
+            calc_results = calculate_with_waste_redistribution(
+            points_df=df_for_calc, verbose_log_func=log, **calculation_args
+            )
+        else: 
+            log("    ...Performing Portion Calculation without Waste Redistribution")
+            calc_results = perform_portion_calculation(
+                points_df=df_for_calc, verbose_log_func=log, **calculation_args)
+         
         if calc_results:
             calc_results["y_offset_for_plot"] = y_offset
         else:
