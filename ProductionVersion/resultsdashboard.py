@@ -214,6 +214,8 @@ else:
         waste_grams = calc_results.get('waste_weight', 0)
         product_length_mm = calc_results.get('product_length', 0)
         waste_redistribution = params.get('waste_redistribution', False)
+        total_good_portions = calc_results.get('good_portions_count', 0)
+        total_loaf_weight = calc_results.get('total_loaf_weight', 0)
         
         kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
         kpi_col1.metric("✅ Yield", f"{yield_percent:.3f} %")
@@ -223,17 +225,9 @@ else:
             kpi_col4.metric("♻️ Waste Redistribution", "Enabled")
         else:
             kpi_col4.metric("♻️ Waste Redistribution", "Disabled")
-    
-        portions = calc_results.get("portions", [])
-        if not waste_redistribution:
-            total_portions = len(portions) - 1 if portions else 0
-        else:
-            total_portions = len(portions) if portions else 0
-            
-        total_weight_calc = sum(p['weight']
-                                for p in portions) if portions else 0
-        avg_portion_weight = (
-            total_weight_calc - portions[0]['weight']) / total_portions if total_portions > 0 else 0
+        
+        good_weight_total = calc_results.get('good_weight', 0)
+        avg_portion_weight = good_weight_total / total_good_portions if total_good_portions > 0 else 0
 
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
         
@@ -241,17 +235,17 @@ else:
             optimized_target = calc_results.get('optimized_target_weight')
             original_target = params.get('target_weight', 0)
             if optimized_target is not None:
-                delta_str = f"{optimized_target - original_target:+.2f}g vs Original {original_target:.2f}g"
+                delta_str = f"{optimized_target - original_target:+.3f}g vs Original {original_target:.2f}g"
                 kpi_col1.metric(
                         label="⚖️ Optimized New Waste Redistribution Target", 
-                        value=f"{optimized_target:.2f} g",
+                        value=f"{optimized_target:.3f} g",
                         delta=delta_str,
                         delta_color="normal"
                     )
             else:
                 kpi_col1.metric(
                     label="⚖️ Original Target", 
-                    value=f"{original_target:.2f} g",
+                    value=f"{original_target:.3f} g",
                     delta="Optimization limit exceeded",
                     delta_color="inverse" 
                 )          
@@ -259,10 +253,10 @@ else:
             kpi_col1.metric("🎯 Target Weight",
                                 f"{params.get('target_weight', 0):.3f} g")
             
-        kpi_col2.metric("Good Portions", f"{total_portions}")
+        kpi_col2.metric("Good Portions", f"{total_good_portions}")
         kpi_col3.metric("Avg Portion Wt.", f"{avg_portion_weight:.3f} g")
         kpi_col4.metric("Total Loaf Wt.",
-                        f"{total_weight_calc / 1000:.3f} kg")
+                        f"{total_loaf_weight / 1000:.3f} kg")
 
     st.markdown("---")
 
