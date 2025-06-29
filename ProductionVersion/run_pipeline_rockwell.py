@@ -162,6 +162,20 @@ PLC_WRITE_TAG_MAPPING = {
     "yield_percentage" : "PC_yield_percentage",                  # PLC Tag Type: REAL
 }
 
+#  Create a UDT (User-Defined Type):
+#         - In the Controller Organizer, right-click "Data Types" > "User-Defined".
+#         - Create a new UDT named `PC_Portion_Data` (or similar).
+#         - Add the following members to the UDT:
+#           - `Start_Y`   (Data Type: REAL)
+#           - `End_Y`     (Data Type: REAL)
+#           - `Length`    (Data Type: REAL)
+#           - `Weight`    (Data Type: REAL)
+
+# Create an ARRAY tag for the portion data:
+#           - Name: `PC_Portion_Results`
+#           - Data Type: `PC_Portion_Data` (the UDT you just created)
+#           - Dimensions: Set the array size, e.g., `[100]`. This must match `PLC_PORTION_ARRAY_SIZE` above.
+
 # =============================================================================
 # --- SCRIPT LOGIC ---
 # =============================================================================
