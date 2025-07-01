@@ -147,26 +147,34 @@ def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = False) 
     return df_aligned
 
 
-def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult):
+def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult, ror_samples=500):
+    """
+    Estimates ROR radius using fewer samples.
+    """
     if o3d_pcd is None or not o3d_pcd.has_points():
         return None, "Cloud empty for ROR est."
     n_pts = len(o3d_pcd.points)
     if n_pts < k_neighbors + 1:
         return None, f"Not enough pts ({n_pts}) for k={k_neighbors}."
+    
     try:
         tree = o3d.geometry.KDTreeFlann(o3d_pcd)
+        samples = min(ror_samples, n_pts) 
+        
         dists = []
-        #samples = min(500, n_pts)
-        samples = min(1000, n_pts)
         indices = np.random.choice(n_pts, size=samples, replace=False)
-        for i_idx in indices:  # Renamed i to i_idx
-            [k_found, idx_knn, _] = tree.search_knn_vector_3d(  # Renamed idx to idx_knn
-                o3d_pcd.points[i_idx], k_neighbors + 1)
+        for i_idx in indices:
+            [k_found, idx_knn, _] = tree.search_knn_vector_3d(
+                o3d_pcd.points[i_idx], k_neighbors + 1
+            )
             if k_found >= k_neighbors + 1:
                 dists.append(np.linalg.norm(
-                    o3d_pcd.points[i_idx] - o3d_pcd.points[idx_knn[k_neighbors]]))
+                    o3d_pcd.points[i_idx] - o3d_pcd.points[idx_knn[k_neighbors]]
+                ))
+
         if not dists:
-            return None, "No k-th neighbors found. Cloud might be too sparse or k too high."
+            return None, "No k-th neighbors found. Cloud might be too sparse."
+        
         avg_dist = np.mean(dists)
         est_rad = avg_dist * mult
         return est_rad, f"Avg k-NN dist ({samples} samples, k={k_neighbors}): {avg_dist:.4f}mm. Suggested Radius (x{mult:.2f}): {est_rad:.4f}mm"
@@ -174,61 +182,93 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult):
         return None, f"ROR radius est. error: {e}"
 
 
-def apply_ror_filter_to_df(points_df, ror_nb_points, ror_radius_val, verbose_log_func=None):
+# In FunctionLib.py
+
+def apply_ror_filter_to_df(
+    points_df, 
+    ror_nb_points, 
+    ror_radius_val,
+    verbose_log_func=None,
+    downsample_before_ror=False
+):
+    """
+    Applies the Radius Outlier Removal (ROR) filter to a point cloud DataFrame.
+    Includes an optional optimization to run the filter on a downsampled cloud first for speed.
+
+    Args:
+        points_df (pd.DataFrame): DataFrame with 'x', 'y', 'z' columns.
+        ror_nb_points (int): The minimum number of points required within the given radius.
+        ror_radius_val (float): The search radius for the neighborhood.
+        downsample_before_ror (bool): If True, runs the faster optimized method. 
+                                      If False, runs the direct, slower method on the full cloud.
+        verbose_log_func (function, optional): A logging function for detailed status.
+
+    Returns:
+        tuple: A tuple containing (filtered_DataFrame, status_message).
+    """
+    log = verbose_log_func if verbose_log_func else lambda msg: None
+
     if not _open3d_installed:
-        if verbose_log_func:
-            verbose_log_func("ROR skipped: Open3D not installed.")
         return points_df, "ROR skipped: Open3D not installed."
     if points_df is None or points_df.empty:
-        if verbose_log_func:
-            verbose_log_func("ROR skipped: Input DataFrame is empty.")
         return points_df, "ROR skipped: Input DataFrame is empty."
     if not (ror_nb_points > 0 and ror_radius_val > 0):
-        if verbose_log_func:
-            verbose_log_func(
-                f"ROR skipped: Invalid ROR parameters (nb_points={ror_nb_points} or radius={ror_radius_val}). Both must be > 0.")
-        return points_df, "ROR skipped: Invalid ROR parameters."
+        return points_df, f"ROR skipped: Invalid ROR parameters."
 
-    if verbose_log_func:
-        verbose_log_func(
-            f"Applying ROR: nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
-    pcd_apply_ror = o3d.geometry.PointCloud()
-    pcd_apply_ror.points = o3d.utility.Vector3dVector(
-        points_df[['x', 'y', 'z']].values)
-
-    if not pcd_apply_ror.has_points():
-        if verbose_log_func:
-            verbose_log_func("ROR: Cloud is empty before filtering.")
-        return points_df, "ROR: Cloud was empty."
-
-    n_before = len(pcd_apply_ror.points)
     try:
-        pcd_filtered, _ = pcd_apply_ror.remove_radius_outlier(
-            nb_points=int(ror_nb_points), radius=float(ror_radius_val)
-        )
-        n_after = len(pcd_filtered.points)
-        n_removed = n_before - n_after
+        pcd_original = o3d.geometry.PointCloud()
+        pcd_original.points = o3d.utility.Vector3dVector(points_df.values)
+        n_before = len(pcd_original.points)
+        
+        if downsample_before_ror:
+            log(f"Applying Optimized ROR (on downsampled cloud): nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
+
+            voxel_size_for_ror = ror_radius_val / 2.0
+            pcd_downsampled = pcd_original.voxel_down_sample(voxel_size_for_ror)
+            log(f"    ...Running ROR on a downsampled cloud of {len(pcd_downsampled.points)} points.")
+
+            _, outlier_indices = pcd_downsampled.remove_radius_outlier(
+                nb_points=int(ror_nb_points), radius=float(ror_radius_val)
+            )
+
+            tree_original = o3d.geometry.KDTreeFlann(pcd_original)
+            indices_to_remove = set()
+            outlier_points = pcd_downsampled.select_by_index(outlier_indices).points
+            
+            for point in outlier_points:
+                [_, idx, _] = tree_original.search_knn_vector_3d(point, 1)
+                if idx:
+                    indices_to_remove.add(idx[0])
+
+            pcd_final = pcd_original.select_by_index(list(indices_to_remove), invert=True)
+            n_removed = len(indices_to_remove)
+            
+        else:
+            log(f"Applying Direct ROR (on full cloud): nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
+            
+            pcd_final, ind = pcd_original.remove_radius_outlier(
+                nb_points=int(ror_nb_points), 
+                radius=float(ror_radius_val)
+            )
+            n_removed = n_before - len(pcd_final.points)
+        
+        n_after = len(pcd_final.points)
 
         if n_after > 0:
-            filtered_df = pd.DataFrame(np.asarray(
-                pcd_filtered.points), columns=['x', 'y', 'z'])
-            status_msg = f"ROR Applied: Removed {n_removed} points. Cloud from {n_before:,} to {n_after:,} points."
-            if verbose_log_func:
-                verbose_log_func(status_msg)
+            filtered_df = pd.DataFrame(np.asarray(pcd_final.points), columns=['x', 'y', 'z'])
+            status_msg = f"ROR Applied: Removed {n_removed:,} points. Cloud size: {n_before:,} -> {n_after:,}."
+            log(status_msg)
             return filtered_df, status_msg
         else:
-            status_msg = f"ROR Warning: Filter removed all points (from {n_before}). Returning original cloud."
-            if verbose_log_func:
-                verbose_log_func(status_msg)
+            status_msg = "ROR Warning: Filter removed all points. Returning original cloud."
+            log(status_msg)
             return points_df, status_msg
-
+            
     except Exception as e_ror_app:
         status_msg = f"ROR Filter Error: {e_ror_app}. Returning original cloud."
-        if verbose_log_func:
-            verbose_log_func(status_msg)
+        log(status_msg)
         return points_df, status_msg
-
-
+    
 def calculate_slice_profile(
     slice_x_np, slice_z_np,
     flat_bottom, top_down, area_method, alpha_value,
@@ -413,7 +453,7 @@ def perform_portion_calculation(
 
     log = verbose_log_func if verbose_log_func else lambda x, end_line=True: None
 
-    log("Portion calculation: Starting...")
+    log("\nPortion calculation: Starting...")
 
     if points_df is None or points_df.empty:
         res["status"] = "Err: No cloud data for calculation."
@@ -657,7 +697,7 @@ def perform_portion_calculation(
             log(traceback.format_exc())
     finally:
         tot_calc_t = time.time() - calc_t_start
-        final_stat_msg = f"{stat_msg} Total Time: {tot_calc_t:.2f}s (Profile: {vp_time:.2f}s, Cutting: {cut_time:.2f}s)"
+        final_stat_msg = f"\n {stat_msg} Total Calculate Time: {tot_calc_t:.2f}s (Profile: {vp_time:.2f}s, Cutting: {cut_time:.2f}s)"
         log(final_stat_msg)
 
         res["portions"] = out_portions
@@ -1145,7 +1185,7 @@ def calculate_with_waste_redistribution(
         vp_time_str = f", Profile: {vp_time:.2f}s" if '_vp_start_t' in locals() else ""
         cut_time_str = f", Cutting: {cut_time:.2f}s" if '_cut_start_t' in locals() else ""
         res["calc_time"] = tot_calc_t
-        res["status"] += f" Total Time: {tot_calc_t:.2f}s{vp_time_str}{cut_time_str}"
+        res["status"] += f"\n Total Calculate Time: {tot_calc_t:.2f}s{vp_time_str}{cut_time_str}"
         log(res["status"])
         
     return res
