@@ -79,6 +79,7 @@ DEFAULT_PIPELINE_PARAMS = {
     "ror_k_for_radius_est": 20,            # 'k' for k-NN distance estimation
     "ror_radius_multiplier_est": 2.0,      # Multiplier for the estimated radius
     "ror_radius": 5.0,                     # Fallback radius if estimation is off or fails
+    "ror_samples": 500,                    # Number of samples to use for radius estimation
 
     # --- Calculation Parameters ---
     "waste_redistribution": False,         # Enable waste redistribution
@@ -110,7 +111,7 @@ XYZ_INPUT_FOLDER = "xyz_input"          # Folder to watch for new .xyz files
 XYZ_PROCESSED_FOLDER = "xyz_processed"  # Folder to move files to after processing
 
 # 7. PLC Configuration
-PLC_MODE = False                 # SET TO True TO READ PARAMS FROM PLC
+PLC_MODE = False                # SET TO True TO READ PARAMS FROM PLC
 PLC_IP_ADDRESS = "192.168.1.10"  # IMPORTANT: Change to your PLC's IP address
 PLC_PROCESSOR_SLOT = 0           # Slot of the CompactLogix/ControlLogix processor
 PLC_PORTION_ARRAY_SIZE = 100     # PLC max array size for portions
@@ -159,7 +160,7 @@ PLC_WRITE_TAG_MAPPING = {
     "first_portion_weight": "PC_First_Portion_Weight",           # PLC Tag Type: REAL
     "calculated_density_g_cm3": "PC_Calculated_Density",         # PLC Tag Type: REAL
     "total_loaf_length": "PC_Total_Loaf_Length",                 # PLC Tag Type: REAL
-    "yield_percentage" : "PC_yield_percentage",                  # PLC Tag Type: REAL
+    "yield_percentage" : "PC_Yield_Percentage",                  # PLC Tag Type: REAL
 }
 
 #  Create a UDT (User-Defined Type):
@@ -377,8 +378,7 @@ def process_single_file(xyz_file_path, log_messages):
             log("    ...PLC_MODE is enabled.")
             plc_values = get_params_from_plc(PLC_IP_ADDRESS, PLC_PROCESSOR_SLOT, PLC_TAG_MAPPING, log)
             if plc_values:
-                end_time = time.time()
-                log(f"\n--- PLC Read took {end_time - PLC_read_starttime:.2f} seconds ---")
+                log(f"\n--- PLC Read took {time.time() - PLC_read_starttime:.2f} seconds ---")
                 # Translate Density Source
                 density_selector = plc_values.pop('density_source_selector', 0) # Use .pop to remove selector
                 if density_selector == 1:
@@ -405,8 +405,11 @@ def process_single_file(xyz_file_path, log_messages):
             
         # --- Step 1: Load Raw Point Cloud ---
         log(f"\n[1/7] Loading raw data from: {os.path.basename(xyz_file_path)}")
+        load_starttime = time.time()
         points_numpy_array = load_point_cloud_from_file(xyz_file_path)
-        
+        load_endtime = time.time()
+        log(f"    ...File loaded in {load_endtime - load_starttime:.2f} seconds.")
+
         if points_numpy_array is None or points_numpy_array.shape[0] == 0:
             log("Aborting due to file loading error or empty cloud.")
             return
@@ -419,7 +422,10 @@ def process_single_file(xyz_file_path, log_messages):
         # --- Step 2: PCA Alignment (Optional) ---
         if current_pipeline_params.get("pca_align"):
             log("\n[2/7] Applying PCA Alignment...")
+            pca_starttime = time.time()
             processed_df = align_point_cloud_with_pca(processed_df)
+            log(f"    ...PCA Alignment took {time.time() - pca_starttime:.2f} seconds.")
+
             log("    ...PCA Alignment Complete.")
         else:
             log("\n[2/7] PCA Alignment skipped (disabled in config).")
@@ -428,6 +434,7 @@ def process_single_file(xyz_file_path, log_messages):
         if current_pipeline_params.get("enable_auto_downsample") and len(processed_df) > current_pipeline_params.get("auto_downsample_threshold", 9e9):
             threshold = current_pipeline_params.get("auto_downsample_threshold")
             log(f"\n[3/7] Applying Auto-Downsample (Threshold: {threshold:,})...")
+            auto_downsample_starttime = time.time()
             if _open3d_installed:
                 pcd_ds = o3d.geometry.PointCloud()
                 pcd_ds.points = o3d.utility.Vector3dVector(processed_df.to_numpy())
@@ -435,6 +442,7 @@ def process_single_file(xyz_file_path, log_messages):
                 processed_df = pd.DataFrame(np.asarray(
                     pcd_ds.random_down_sample(ratio).points), columns=['x', 'y', 'z'])
                 log(f"    ...Downsampled to {len(processed_df)} points.")
+                log(f"    ...Auto-Downsample took {time.time() - auto_downsample_starttime:.2f} seconds.")
             else:
                 log("    ...Auto-Downsample skipped: Open3D not installed.")
         else:
@@ -444,6 +452,7 @@ def process_single_file(xyz_file_path, log_messages):
         if current_pipeline_params.get("apply_ror"):
             log("\n[4/7] Applying Radius Outlier Removal Filter...")
             if _open3d_installed:
+                ror_starttime = time.time()
                 pcd_ror = o3d.geometry.PointCloud()
                 pcd_ror.points = o3d.utility.Vector3dVector(
                     processed_df.to_numpy())
@@ -451,8 +460,10 @@ def process_single_file(xyz_file_path, log_messages):
                 ror_params = current_pipeline_params.copy()
                 if ror_params.get("ror_auto_estimate_radius"):
                     est_radius, est_msg = estimate_ror_radius_util_o3d(
-                        pcd_ror, ror_params.get("ror_k_for_radius_est", 20), ror_params.get(
-                            "ror_radius_multiplier_est", 2.0)
+                        pcd_ror,
+                        ror_params.get("ror_k_for_radius_est", 20),
+                        ror_params.get("ror_radius_multiplier_est", 2.0),
+                        ror_params.get("ror_samples", 500)
                     )
                     log(f"    ...ROR Estimation: {est_msg}")
                     if est_radius:
@@ -464,6 +475,7 @@ def process_single_file(xyz_file_path, log_messages):
                         "ror_nb_points", 10), ror_params.get("ror_radius", 0.1)
                 )
                 log(f"    ...ROR Filter removed {n_before - len(processed_df)} points.")
+                log(f"    ...ROR Filter took {time.time() - ror_starttime:.2f} seconds.")
             else:
                 log("    ...ROR Filter skipped: Open3D not installed.")
         else:
@@ -501,15 +513,16 @@ def process_single_file(xyz_file_path, log_messages):
         # --- Perform Portion Calculation ---
         # If waste redistribution is enabled, use calculate_with_waste_redistribution function
         if current_pipeline_params.get("waste_redistribution"):
-            log("    ...Performing Portion Calculation with Waste Redistribution")
+            log("\n    ...Performing Portion Calculation with Waste Redistribution")
+            load_starttime = time.time()
             calc_results = calculate_with_waste_redistribution(
             points_df=df_for_calc, verbose_log_func=log, **calculation_args
             )
         else: 
-            log("    ...Performing Portion Calculation without Waste Redistribution")
+            log("\n    ...Performing Portion Calculation without Waste Redistribution")
+            load_starttime = time.time()
             calc_results = perform_portion_calculation(
                 points_df=df_for_calc, verbose_log_func=log, **calculation_args)
-         
         if calc_results:
             calc_results["y_offset_for_plot"] = y_offset
         else:
@@ -612,8 +625,7 @@ def process_single_file(xyz_file_path, log_messages):
                 log
             )
 
-            end_time = time.time()
-            log(f"\n--- Pipeline upto PLC Write Time {end_time - start_time:.2f} seconds, Write took {end_time - PLC_write_starttime:.2f} seconds ---")
+            log(f"\n--- Pipeline upto PLC Write Time {time.time() - start_time:.2f} seconds, Write took {time.time() - PLC_write_starttime:.2f} seconds ---")
         else:
             log("\n[6/7] PLC Write-Back skipped (PLC_MODE is disabled or no results).")
 
