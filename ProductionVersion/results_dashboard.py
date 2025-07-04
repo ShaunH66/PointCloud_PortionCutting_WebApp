@@ -5,6 +5,7 @@ import pickle
 import os
 import plotly.graph_objects as go
 import sys
+import time
 
 try:
     from functionlib import (
@@ -24,6 +25,7 @@ except ImportError as e:
 # --- Configuration ---
 DEFAULT_PAYLOAD_FILE = "latest_run_payload.pkl"
 ARCHIVE_BASE_FOLDER = "run_archives"
+AUTO_REFRESH_INTERVAL_SECONDS = 5
 
 # --- App Layout ---
 st.set_page_config(
@@ -54,6 +56,7 @@ def load_payload_from_source(file_source, source_id):
         st.error(f"Failed to load or parse payload file: {e}")
         
         
+@st.cache_data(ttl=10) # Cache the file list for 10 seconds to avoid constant disk reads
 def get_recent_runs(archive_folder):
     """Scans the archive folder and returns a sorted list of recent payload files."""
     recent_runs = []
@@ -62,12 +65,9 @@ def get_recent_runs(archive_folder):
             if filename.startswith("payload_") and filename.endswith(".pkl"):
                 file_path = os.path.join(archive_folder, filename)
                 try:
-                    # Get the file's modification time
                     mod_time = os.path.getmtime(file_path)
                     recent_runs.append((filename, file_path, mod_time))
-                except OSError:
-                    continue # Skip files that might be in the process of being written
-    # Sort by modification time, newest first
+                except OSError: continue
     recent_runs.sort(key=lambda x: x[2], reverse=True)
     return recent_runs
 
@@ -76,48 +76,75 @@ def get_recent_runs(archive_folder):
 st.title("📊 Point Cloud Portioning Dashboard")
 st.markdown("---")
 
-
 # Initialize state if it's the first run
 if 'last_loaded_file_id' not in st.session_state:
     st.session_state.last_loaded_file_id = None
-    
-    
+
+if 'last_loaded_file_id' not in st.session_state:
+    st.session_state.last_loaded_file_id = None
+if 'auto_load_enabled' not in st.session_state:
+    st.session_state.auto_load_enabled = False
+
+if 'num_runs_to_show' not in st.session_state:
+    st.session_state.num_runs_to_show = 15
+
 # --- Sidebar Controls ---
 with st.sidebar:
     st.header("⚙️ Controls")
 
     # --- Option 1: Load the latest run ---
-    if st.button("🔄 Load Latest Run", use_container_width=True, type="primary"):
+    st.toggle(
+        "Auto-Load Latest Run", 
+        value=st.session_state.auto_load_enabled, 
+        key="auto_load_enabled",
+        help="When enabled, this app will automatically load new results from 'latest_run_payload.pkl' as it's updated."
+    )
+    
+    # --- Manual Load Button (still useful when auto-load is off) ---
+    if st.button("🔄 Load Latest Run", use_container_width=True, type="primary", disabled=st.session_state.auto_load_enabled):
         if os.path.exists(DEFAULT_PAYLOAD_FILE):
             with open(DEFAULT_PAYLOAD_FILE, "rb") as f:
-                # Use the file path and modification time as a unique ID
                 file_id = f"{DEFAULT_PAYLOAD_FILE}-{os.path.getmtime(DEFAULT_PAYLOAD_FILE)}"
                 load_payload_from_source(f, file_id)
         else:
-            st.warning(f"Default file not found: '{DEFAULT_PAYLOAD_FILE}'. Run the headless script first.")
+            st.warning(f"Default file not found: '{DEFAULT_PAYLOAD_FILE}'.")
 
     st.markdown("---")
     
-    st.subheader("📁 Recent Runs")
-    recent_runs_list = get_recent_runs(ARCHIVE_BASE_FOLDER)
-    
-    if not recent_runs_list:
-        st.caption("No archived runs found.")
-    else:
-        # Create a dictionary for the selectbox: {Display Name: File Path}
-        # Display name is just the filename without the .pkl extension
-        run_options = {os.path.splitext(fname)[0]: fpath for fname, fpath, _ in recent_runs_list[:15]} # Show latest 15
-        
-        selected_run_path = st.selectbox(
-            "Select a run to load:", 
-            options=list(run_options.keys()),
-            index=None, # Default to no selection
-            placeholder="Choose a past run..."
+    st.subheader("📁 Recent & Specific Runs")
+
+    # --- Row for Refresh Button and Number Input ---
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        # This button clears the cache, forcing get_recent_runs to re-scan the disk
+        if st.button("🔄 Refresh List", use_container_width=True):
+            get_recent_runs.clear()
+            st.toast("Recent runs list refreshed!")
+            st.rerun()
+    with col2:
+        st.number_input(
+            "Show:", 
+            min_value=5, 
+            max_value=5000, 
+            step=5,
+            key="num_runs_to_show",
+            help="Number of recent runs to display in the dropdown."
         )
+
+    # --- Dropdown for Recent Runs ---
+    recent_runs_list = get_recent_runs(ARCHIVE_BASE_FOLDER)
+    if not recent_runs_list:
+        st.caption("No archived runs found in 'run_archives' folder.")
+    else:
+        num_to_show = st.session_state.num_runs_to_show
+        run_options = {os.path.splitext(fname)[0]: fpath for fname, fpath, _ in recent_runs_list[:num_to_show]}
         
-        if selected_run_path:
-            # When a user selects a run, load it
-            file_path = run_options[selected_run_path]
+        selected_run_name = st.selectbox(
+            "Select a past run to load:", options=list(run_options.keys()),
+            index=None, placeholder="Choose from archives..."
+        )
+        if selected_run_name:
+            file_path = run_options[selected_run_name]
             with open(file_path, "rb") as f:
                 file_id = f"{file_path}-{os.path.getmtime(file_path)}"
                 load_payload_from_source(f, file_id)
@@ -419,3 +446,22 @@ else:
         st.subheader("Processing Log")
         st.text_area("Log", "".join(
             [f"{msg}\n" for msg in pipeline_log]), height=600, disabled=True, key="log_details_view")
+        
+if st.session_state.auto_load_enabled:
+    if os.path.exists(DEFAULT_PAYLOAD_FILE):
+        try:
+            current_mod_time = os.path.getmtime(DEFAULT_PAYLOAD_FILE)
+            # Create a unique ID for the current state of the file on disk
+            current_file_id = f"{DEFAULT_PAYLOAD_FILE}-{current_mod_time}"
+            
+            # If the file on disk is different from the one we have loaded, reload it
+            if st.session_state.last_loaded_file_id != current_file_id:
+                with open(DEFAULT_PAYLOAD_FILE, "rb") as f:
+                    load_payload_from_source(f, current_file_id)
+        except Exception as e:
+            # This can happen if the file is being written at the exact moment we check
+            print(f"Auto-load check failed, will retry. Error: {e}")
+    
+    # Schedule the next check
+    time.sleep(AUTO_REFRESH_INTERVAL_SECONDS)
+    st.rerun()
