@@ -237,54 +237,42 @@ else:
     # --- Header with Key Performance Indicators (KPIs) ---
     st.header("📈 Run Overview & Key Metrics")
     if calc_results:
-        yield_percent = calc_results.get('yield_percentage', 0)
-        waste_grams = calc_results.get('waste_weight', 0)
-        product_length_mm = calc_results.get('product_length', 0)
-        waste_redistribution = params.get('waste_redistribution', False)
-        total_good_portions = calc_results.get('good_portions_count', 0)
-        total_loaf_weight = calc_results.get('total_loaf_weight', 0)
-        
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
-        kpi_col1.metric("✅ Yield", f"{yield_percent:.3f} %")
-        kpi_col2.metric("🗑️ Waste / Balance Portion", f"{waste_grams:.3f} g")
-        kpi_col3.metric("📏 Product Length", f"{product_length_mm:.3f} mm")
-        if waste_redistribution:
-            kpi_col4.metric("♻️ Waste Redistribution", "Enabled")
-        else:
-            kpi_col4.metric("♻️ Waste Redistribution", "Disabled")
-        
+        portions = calc_results.get('portions', [])
+        good_portions_count = calc_results.get('good_portions_count', 0)
         good_weight_total = calc_results.get('good_weight', 0)
-        avg_portion_weight = good_weight_total / total_good_portions if total_good_portions > 0 else 0
-
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+        waste_grams = calc_results.get('waste_weight', 0)
+        total_loaf_weight = calc_results.get('total_loaf_weight', 0)
+        yield_percent = yield_percent = calc_results.get('yield_percentage', 0)
+        avg_portion_weight = good_weight_total / good_portions_count if good_portions_count > 0 else 0
+        product_length_mm = calc_results.get('product_length', 0)
+        strategy = "Enabled" if params.get('waste_redistribution', False) else "Disabled"
         
-        if waste_redistribution: 
-            optimized_target = calc_results.get('optimized_target_weight')
-            original_target = params.get('target_weight', 0)
-            if optimized_target is not None:
-                delta_str = f"{optimized_target - original_target:+.3f}g vs Original {original_target:.2f}g"
-                kpi_col1.metric(
-                        label="⚖️ Optimized New Waste Redistribution Target", 
-                        value=f"{optimized_target:.3f} g",
-                        delta=delta_str,
-                        delta_color="normal"
-                    )
-            else:
-                kpi_col1.metric(
-                    label="⚖️ Original Target", 
-                    value=f"{original_target:.3f} g",
-                    delta="Optimization limit exceeded",
-                    delta_color="inverse" 
-                )          
-        else:
-            kpi_col1.metric("🎯 Target Weight",
-                                f"{params.get('target_weight', 0):.3f} g")
-            
-        kpi_col2.metric("Good Portions", f"{total_good_portions}")
-        kpi_col3.metric("Avg Portion Wt.", f"{avg_portion_weight:.3f} g")
-        kpi_col4.metric("Total Loaf Wt.",
-                        f"{total_loaf_weight / 1000:.3f} kg")
+        kpi_row1_cols = st.columns(4)
+        kpi_row1_cols[0].metric(label="✅ Yield", value=f"{yield_percent:.2f} %")
+        kpi_row1_cols[1].metric(label="🗑️ Waste / Balance Portion", value=f"{waste_grams:.2f} g")
+        kpi_row1_cols[2].metric(label="📏 Product Length", value=f"{product_length_mm:.2f} mm")
+        kpi_row1_cols[3].metric(label="♻️ Waste Redistribution", value=strategy)
 
+        # Add a space between rows
+        st.write("") 
+        
+        kpi_row2_cols = st.columns(4)
+        with kpi_row2_cols[0]:
+            original_target = params.get('target_weight', 0)
+            if strategy == "Enabled":
+                optimized_target = calc_results.get('optimized_target_weight')
+                if optimized_target is not None:
+                    delta_str = f"{optimized_target - original_target:+.2f}g vs Original"
+                    st.metric("⚖️ Optimized Target", f"{optimized_target:.2f} g", delta_str, "normal")
+                else:
+                    st.metric("⚖️ Original Target", f"{original_target:.2f} g", "Opt. limit exceeded", "inverse")          
+            else:
+                st.metric("🎯 Target Weight", f"{(original_target):.2f} g")
+        
+        kpi_row2_cols[1].metric("Good Portions", f"{good_portions_count}")
+        kpi_row2_cols[2].metric("Avg. Portion Wt.", f"{avg_portion_weight:.2f} g")
+        kpi_row2_cols[3].metric("Total Loaf Wt.", f"{total_loaf_weight / 1000:.3f} kg")
+        
     st.markdown("---")
 
     # --- Main Visualization Tabs ---
