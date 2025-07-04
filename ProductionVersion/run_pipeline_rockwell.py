@@ -84,7 +84,7 @@ DEFAULT_PIPELINE_PARAMS = {
     # --- Calculation Parameters ---
     "waste_redistribution": False,         # Enable waste redistribution
     "total_weight": 3333.3,                # Total weight of the loaf in grams
-    "target_weight": 250.0,                # Target weight for each portion
+    "target_weight": 150.0,                # Target weight for each portion
     "slice_thickness": 0.5,                # Thickness of each slice in mm
     "no_interp": True,                     # Disable interpolation for slice calculations
     "flat_bottom": False,                  # Use flat bottom mode
@@ -163,7 +163,7 @@ PLC_WRITE_TAG_MAPPING = {
     "yield_percentage" : "PC_Yield_Percentage",                  # PLC Tag Type: REAL
 }
 
-#  Create a UDT (User-Defined Type):
+#  Create a UDT in Rockwells Studio5000 Software (User-Defined Type):
 #         - In the Controller Organizer, right-click "Data Types" > "User-Defined".
 #         - Create a new UDT named `PC_Portion_Data` (or similar).
 #         - Add the following members to the UDT:
@@ -407,8 +407,7 @@ def process_single_file(xyz_file_path, log_messages):
         log(f"\n[1/7] Loading raw data from: {os.path.basename(xyz_file_path)}")
         load_starttime = time.time()
         points_numpy_array = load_point_cloud_from_file(xyz_file_path)
-        load_endtime = time.time()
-        log(f"    ...File loaded in {load_endtime - load_starttime:.2f} seconds.")
+        log(f"    ...File loaded in {time.time() - load_starttime:.2f} seconds.")
 
         if points_numpy_array is None or points_numpy_array.shape[0] == 0:
             log("Aborting due to file loading error or empty cloud.")
@@ -514,13 +513,11 @@ def process_single_file(xyz_file_path, log_messages):
         # If waste redistribution is enabled, use calculate_with_waste_redistribution function
         if current_pipeline_params.get("waste_redistribution"):
             log("\n    ...Performing Portion Calculation with Waste Redistribution")
-            load_starttime = time.time()
             calc_results = calculate_with_waste_redistribution(
             points_df=df_for_calc, verbose_log_func=log, **calculation_args
             )
         else: 
             log("\n    ...Performing Portion Calculation without Waste Redistribution")
-            load_starttime = time.time()
             calc_results = perform_portion_calculation(
                 points_df=df_for_calc, verbose_log_func=log, **calculation_args)
         if calc_results:
