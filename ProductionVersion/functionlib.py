@@ -649,7 +649,7 @@ def perform_portion_calculation(
                 break
         if verbose_log_func:
             log("", end_line=True)
-
+        log(f"Slice Thickness: {slice_inc:.2f}mm, Total Weight: {total_w:.2f}g, Target Weight: {target_w:.2f}g, Tolerance: {w_tol:.2f}g")
         cut_time = time.time() - _cut_start_t
 
         if last_phys_cut_y > calc_sy_eff + FLOAT_EPSILON:
@@ -1189,3 +1189,52 @@ def calculate_with_waste_redistribution(
         log(res["status"])
         
     return res
+
+
+def analyze_y_resolution(points_df, precision=4):
+    """
+    Analyzes the Y-axis resolution from a point cloud DataFrame.
+
+    Args:
+        points_df (pd.DataFrame): The input point cloud.
+        precision (int): The number of decimal places to round to for grouping layers.
+
+    Returns:
+        dict: A dictionary containing the analysis results, or None if analysis fails.
+    """
+    if points_df is None or points_df.empty or 'y' not in points_df.columns:
+        return None
+
+    y_coords = points_df['y'].to_numpy()
+
+    # Find unique Y-coordinate "layers"
+    unique_y_layers = np.unique(np.round(y_coords, decimals=precision))
+    
+    if len(unique_y_layers) < 2:
+        return {
+            "error": "Fewer than two unique Y-layers found.",
+            "unique_y_layers": len(unique_y_layers)
+        }
+
+    # Calculate the spacing between each consecutive layer
+    spacings = np.diff(unique_y_layers)
+    spacings = spacings[spacings > 0] # Filter out zero-spacing
+
+    if len(spacings) == 0:
+        return {
+            "error": "No positive spacing found between layers.",
+            "unique_y_layers": len(unique_y_layers)
+        }
+
+    # Calculate and return statistics
+    results = {
+        "mean_spacing_mm": np.mean(spacings),
+        "median_spacing_mm": np.median(spacings),
+        "std_dev_mm": np.std(spacings),
+        "min_spacing_mm": np.min(spacings),
+        "max_spacing_mm": np.max(spacings),
+        "unique_y_layers": len(unique_y_layers),
+        "total_points_analyzed": len(y_coords)
+    }
+    
+    return results
