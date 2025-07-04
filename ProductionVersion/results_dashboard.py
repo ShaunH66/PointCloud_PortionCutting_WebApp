@@ -446,6 +446,19 @@ else:
         st.subheader("Processing Log")
         st.text_area("Log", "".join(
             [f"{msg}\n" for msg in pipeline_log]), height=600, disabled=True, key="log_details_view")
+        st.subheader("Scanner Resolution Analysis")
+        resolution_data = payload.get("resolution_analysis")
+        if resolution_data and 'error' not in resolution_data:
+            res_col1, res_col2 = st.columns(2)
+            res_col1.metric("Mean Y Spacing (Resolution)", f"{resolution_data.get('mean_spacing_mm', 0):.4f} mm")
+            res_col2.metric("Unique Scan Lines Found", f"{resolution_data.get('unique_y_layers', 0):,}")
+            
+            with st.expander("Show Full Resolution Statistics"):
+                st.json(resolution_data)
+        elif resolution_data:
+            st.warning(f"Resolution analysis could not be completed: {resolution_data['error']}")
+        else:
+            st.info("No resolution analysis data was found in this payload.")
         
 if st.session_state.auto_load_enabled:
     if os.path.exists(DEFAULT_PAYLOAD_FILE):
