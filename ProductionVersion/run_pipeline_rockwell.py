@@ -84,7 +84,7 @@ DEFAULT_PIPELINE_PARAMS = {
 
     # --- Calculation Parameters ---
     "waste_redistribution": False,                  # Enable waste redistribution
-    "use_scan_resolution_as_slice_thickness": True, # Use scan resolution to set slice thickness
+    "use_scan_resolution_as_slice_thickness": True, # Use scan resolution to set slice thickness, automatically calculated from the point cloud
     "total_weight": 3333.3,                         # Total weight of the loaf in grams
     "target_weight": 150.0,                         # Target weight for each portion
     "slice_thickness": 0.5,                         # Thickness of each slice in mm
@@ -419,24 +419,6 @@ def process_single_file(xyz_file_path, log_messages):
             points_numpy_array, columns=['x', 'y', 'z'])
         log(f"    ...Loaded {len(current_points_df)} raw points.")
         
-        resolution_stats = None 
-        if current_pipeline_params.get("use_scan_resolution_as_slice_thickness", False):
-            log("    ...'Use Scan Resolution' is ENABLED.")
-            resolution_stats = analyze_y_resolution(current_points_df)
-            if resolution_stats and 'mean_spacing_mm' in resolution_stats:
-                measured_res = resolution_stats['mean_spacing_mm']
-                # Safety check: ensure the measured resolution is a sane value
-                if 0.01 < measured_res < 5.0:
-                    final_slice_thickness = measured_res
-                    current_pipeline_params['slice_thickness'] = final_slice_thickness
-                    log(f"    ...SUCCESS: Using measured resolution of {final_slice_thickness:.4f} mm as slice thickness.")
-                else:
-                    log(f"    ...WARNING: Measured resolution ({measured_res:.4f} mm) is outside safe limits. Reverting to default slice thickness.")
-            else:
-                log("    ...WARNING: Resolution analysis failed. Reverting to default slice thickness.")
-        else:
-            log("    ...'Use Scan Resolution' is DISABLED. Using default/PLC slice thickness.")
-        
         processed_df = current_points_df.copy()
 
         # --- Step 2: PCA Alignment (Optional) ---
@@ -467,7 +449,26 @@ def process_single_file(xyz_file_path, log_messages):
                 log("    ...Auto-Downsample skipped: Open3D not installed.")
         else:
             log("\n[3/7] Auto-Downsample skipped (not needed or disabled).")
-
+        
+        resolution_stats = None 
+        if current_pipeline_params.get("use_scan_resolution_as_slice_thickness", False):
+            log("\n    ...'Use Scanner Resolution' is ENABLED. Finding scan resolution...")
+            resolution_stats = analyze_y_resolution(current_points_df)
+            if resolution_stats and 'mean_spacing_mm' in resolution_stats:
+                measured_res = resolution_stats['mean_spacing_mm']
+                # Safety check: ensure the measured resolution is a sane value
+                if 0.01 < measured_res < 5.0:
+                    final_slice_thickness = measured_res
+                    current_pipeline_params['slice_thickness'] = final_slice_thickness
+                    log(f"    ...SUCCESS: Using measured resolution of {final_slice_thickness:.4f} mm as slice thickness.")
+                    log(f"    ...Finding scan resolution took {time.time() - load_starttime:.2f} seconds.")
+                else:
+                    log(f"    ...WARNING: Measured resolution ({measured_res:.4f} mm) is outside safe limits. Reverting to default slice thickness.")
+            else:
+                log("    ...WARNING: Resolution analysis failed. Reverting to default slice thickness.")
+        else:
+            log("    ...'Use Scan Resolution' is DISABLED. Using default/PLC slice thickness.")
+            
         # --- Step 4: Radius Outlier Removal (Optional) ---
         if current_pipeline_params.get("apply_ror"):
             log("\n[4/7] Applying Radius Outlier Removal Filter...")
@@ -500,7 +501,7 @@ def process_single_file(xyz_file_path, log_messages):
                 log("    ...ROR Filter skipped: Open3D not installed.")
         else:
             log("\n[4/7] ROR Filter skipped (disabled in config).")
-
+            
         final_display_cloud = processed_df.copy()
 
         # --- Step 5: Y-Normalization & Final Calculation ---
@@ -647,6 +648,8 @@ def process_single_file(xyz_file_path, log_messages):
         else:
             log("\n[6/7] PLC Write-Back skipped (PLC_MODE is disabled or no results).")
 
+        log(f"\n--- Pipeline completed before saving payload in {time.time()- start_time:.2f} seconds ---")
+        
         # --- Step 7: Save Payload & Display Results ---
         # Create the final payload dictionary
         output_payload = {
@@ -726,8 +729,7 @@ def process_single_file(xyz_file_path, log_messages):
             pd.options.display.float_format = '{:,.2f}'.format
             print(summary_df.to_string(index=False))
 
-        end_time = time.time()
-        print(f"\n--- Pipeline completed in {end_time - start_time:.2f} seconds ---")
+        log(f"\n--- Pipeline completed in {time.time()- start_time:.2f} seconds ---")
         
         # --- Optional: Launch Open3D Viewers ---
         if AUTO_OPEN_O3D_FLYAROUND and _open3d_installed:
