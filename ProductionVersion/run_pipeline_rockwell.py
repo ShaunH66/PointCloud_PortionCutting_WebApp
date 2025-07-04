@@ -83,7 +83,7 @@ DEFAULT_PIPELINE_PARAMS = {
     "ror_samples": 500,                    # Number of samples to use for radius estimation
 
     # --- Calculation Parameters ---
-    "waste_redistribution": False,                  # Enable waste redistribution
+    "waste_redistribution": True,                  # Enable waste redistribution
     "use_scan_resolution_as_slice_thickness": True, # Use scan resolution to set slice thickness, automatically calculated from the point cloud
     "total_weight": 3333.3,                         # Total weight of the loaf in grams
     "target_weight": 150.0,                         # Target weight for each portion
