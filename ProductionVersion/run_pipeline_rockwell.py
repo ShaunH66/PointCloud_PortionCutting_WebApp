@@ -25,6 +25,7 @@ try:
         launch_o3d_viewer_with_cuts,
         load_point_cloud_from_file,
         calculate_with_waste_redistribution,
+        analyze_y_resolution,
         _open3d_installed,
     )
 
@@ -82,17 +83,18 @@ DEFAULT_PIPELINE_PARAMS = {
     "ror_samples": 500,                    # Number of samples to use for radius estimation
 
     # --- Calculation Parameters ---
-    "waste_redistribution": False,         # Enable waste redistribution
-    "total_weight": 3333.3,                # Total weight of the loaf in grams
-    "target_weight": 150.0,                # Target weight for each portion
-    "slice_thickness": 0.5,                # Thickness of each slice in mm
-    "no_interp": True,                     # Disable interpolation for slice calculations
-    "flat_bottom": False,                  # Use flat bottom mode
-    "top_down_scan": False,                # Use top-down scan mode
-    "blade_thickness": 0.0,                # Thickness of the blade in mm (0.0 to disable)    
-    "weight_tolerance": 0.0,               # Weight tolerance for portion calculations (0.0 to disable)
-    "start_trim": 0.0,                     # Trim from the start of the loaf
-    "end_trim": 0.0,                       # Trim from the end of the loaf
+    "waste_redistribution": False,                  # Enable waste redistribution
+    "use_scan_resolution_as_slice_thickness": True, # Use scan resolution to set slice thickness
+    "total_weight": 3333.3,                         # Total weight of the loaf in grams
+    "target_weight": 150.0,                         # Target weight for each portion
+    "slice_thickness": 0.5,                         # Thickness of each slice in mm
+    "no_interp": True,                              # Disable interpolation for slice calculations
+    "flat_bottom": False,                           # Use flat bottom mode
+    "top_down_scan": False,                         # Use top-down scan mode
+    "blade_thickness": 0.0,                         # Thickness of the blade in mm (0.0 to disable)    
+    "weight_tolerance": 0.0,                        # Weight tolerance for portion calculations (0.0 to disable)
+    "start_trim": 0.0,                              # Trim from the start of the loaf
+    "end_trim": 0.0,                                # Trim from the end of the loaf
 
     # --- Area & Density ---
     "density_source": "Calculate from Total Weight & Volume",  # Options: "Calculate from Total Weight & Volume", "Input Directly"
@@ -139,6 +141,7 @@ PLC_TAG_MAPPING = {
     "slice_thickness": "HMI_Slice_Thickness",       # PLC Tag Type: REAL
     "completion_counter": "PC_Completion_Counter",  # PLC Tag Type: DINT
     "waste_redistribution": "HMI_Waste_Redistribution_On", # PLC Tag Type: BOOL (0 or 1)
+    "use_scan_resolution_as_slice_thickness": "HMI_Use_Scan_Resolution_On", # PLC Tag Type: BOOL (0 or 1)
 
     # 0 = "Calculate from Total Weight & Volume"
     # 1 = "Input Directly"
@@ -279,7 +282,7 @@ def get_params_from_plc(ip_address, slot, tag_map, log_func):
                 tag_result = next((r for r in results if r.TagName == plc_tag), None)
                 if tag_result: #and tag_result.Status == 'Success':
                     # Convert BOOLs from 0/1 to True/False
-                    if isinstance(tag_result.Value, int) and script_param in ['no_interp', 'pca_align', 'waste_redistribution']:
+                    if isinstance(tag_result.Value, int) and script_param in ['no_interp', 'pca_align', 'waste_redistribution', "use_scan_resolution_as_slice_thickness"]:
                         plc_params[script_param] = bool(tag_result.Value)
                     else:
                         plc_params[script_param] = tag_result.Value
@@ -408,13 +411,31 @@ def process_single_file(xyz_file_path, log_messages):
         load_starttime = time.time()
         points_numpy_array = load_point_cloud_from_file(xyz_file_path)
         log(f"    ...File loaded in {time.time() - load_starttime:.2f} seconds.")
-
+        
         if points_numpy_array is None or points_numpy_array.shape[0] == 0:
             log("Aborting due to file loading error or empty cloud.")
             return
         current_points_df = pd.DataFrame(
             points_numpy_array, columns=['x', 'y', 'z'])
         log(f"    ...Loaded {len(current_points_df)} raw points.")
+        
+        resolution_stats = None 
+        if current_pipeline_params.get("use_scan_resolution_as_slice_thickness", False):
+            log("    ...'Use Scan Resolution' is ENABLED.")
+            resolution_stats = analyze_y_resolution(current_points_df)
+            if resolution_stats and 'mean_spacing_mm' in resolution_stats:
+                measured_res = resolution_stats['mean_spacing_mm']
+                # Safety check: ensure the measured resolution is a sane value
+                if 0.01 < measured_res < 5.0:
+                    final_slice_thickness = measured_res
+                    current_pipeline_params['slice_thickness'] = final_slice_thickness
+                    log(f"    ...SUCCESS: Using measured resolution of {final_slice_thickness:.4f} mm as slice thickness.")
+                else:
+                    log(f"    ...WARNING: Measured resolution ({measured_res:.4f} mm) is outside safe limits. Reverting to default slice thickness.")
+            else:
+                log("    ...WARNING: Resolution analysis failed. Reverting to default slice thickness.")
+        else:
+            log("    ...'Use Scan Resolution' is DISABLED. Using default/PLC slice thickness.")
         
         processed_df = current_points_df.copy()
 
@@ -635,6 +656,7 @@ def process_single_file(xyz_file_path, log_messages):
             "calculation_results": calc_results,
             "input_params_summary_for_ui": current_pipeline_params,
             "pipeline_log": log_messages,
+            "resolution_analysis": resolution_stats,
         }
         
         # Create a unique filename using a timestamp
