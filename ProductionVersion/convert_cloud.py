@@ -69,8 +69,8 @@ def main():
     print(f"Successfully loaded {len(points_numpy)} points.")
 
     # --- 2. Convert to Open3D format ---
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points_numpy)
+    point_cloud_object = o3d.geometry.PointCloud()
+    point_cloud_object.points = o3d.utility.Vector3dVector(points_numpy)
 
     # --- 3. Save to the specified output format ---
     print(f"\nSaving converted file to: {output_path}")
@@ -78,7 +78,9 @@ def main():
 
     try:
         # Open3D's write_point_cloud function handles the format based on the file extension.
-        success = o3d.io.write_point_cloud(output_path, pcd, write_ascii=write_ascii)
+        # If output_path is "my_file.ply", it saves as PLY.
+        # If output_path is "my_file.pcd", it saves as PCD.
+        success = o3d.io.write_point_cloud(output_path, point_cloud_object, write_ascii=write_ascii)
         if not success:
             raise IOError("Open3D reported a failure to write the file.")
         
