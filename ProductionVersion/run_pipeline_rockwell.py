@@ -346,7 +346,7 @@ def write_results_to_plc(ip_address, slot, single_results_dict, portion_list_of_
 def process_single_file(xyz_file_path, log_messages):
     
     try: 
-        print("\n\n--- Headless Pipeline Starting ---")   
+        print("\n\n--- Cloud File Found Headless Pipeline Starting ---")   
         start_time = time.time()
 
         # Use a single list to capture all log messages
