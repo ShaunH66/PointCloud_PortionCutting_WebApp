@@ -6,11 +6,11 @@ Mitsubishi support coming soon.
 
 This repository contains two-part automation for calculating optimal cutting portions from 3D point cloud data. The system is designed for industrial protocol applications where a "headless" processing engine is triggered by new scan files, and a separate, user-friendly web interface is used for viewing and analyzing the results.
 
-Dashboard preview with "Waste Redistribution" enabled.
+Dashboard preview
 
-![image](https://github.com/user-attachments/assets/8df8cf16-6de7-4597-b1ba-d184a3f90cfb)
+![image](https://github.com/user-attachments/assets/78d4e30f-07b5-4294-8e9b-61d8e271eb98)
 
-Console log preview without "Waste Redistribution" enabled.
+Console log preview
 
 ![image](https://github.com/user-attachments/assets/0c800696-9ddf-45c5-9bcb-43e86335fa47)
 
