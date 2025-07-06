@@ -125,7 +125,6 @@ def load_point_cloud_from_file(file_path):
     return points_array
 
 
-
 def align_point_cloud_with_pca(df: pd.DataFrame, shift_to_origin: bool = False) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -183,9 +182,7 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult, ror_samples=500):
         return est_rad, f"Avg k-NN dist ({samples} samples, k={k_neighbors}): {avg_dist:.4f}mm. Suggested Radius (x{mult:.2f}): {est_rad:.4f}mm"
     except Exception as e:
         return None, f"ROR radius est. error: {e}"
-
-
-# In FunctionLib.py
+    
 
 def apply_ror_filter_to_df(
     points_df, 
@@ -271,6 +268,7 @@ def apply_ror_filter_to_df(
         status_msg = f"ROR Filter Error: {e_ror_app}. Returning original cloud."
         log(status_msg)
         return points_df, status_msg
+    
     
 def calculate_slice_profile(
     slice_x_np, slice_z_np,
@@ -484,6 +482,7 @@ def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y
 #     else:
 #         # Fallback in case of NaN or other numerical issues
 #         return 0.0
+
 
 def perform_portion_calculation(
     points_df, total_w, target_w, slice_inc, no_interp, flat_bottom, top_down,
