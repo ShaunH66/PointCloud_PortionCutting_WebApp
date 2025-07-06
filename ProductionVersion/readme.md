@@ -12,8 +12,7 @@ Dashboard preview
 
 Console log preview
 
-![image](https://github.com/user-attachments/assets/0c800696-9ddf-45c5-9bcb-43e86335fa47)
-
+![image](https://github.com/user-attachments/assets/f67a7674-f821-452f-b3dc-b918b4905c26)
 
 **Core Features**
 
