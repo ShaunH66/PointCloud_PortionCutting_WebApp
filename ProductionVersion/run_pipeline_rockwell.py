@@ -83,10 +83,10 @@ DEFAULT_PIPELINE_PARAMS = {
     "ror_samples": 500,                    # Number of samples to use for radius estimation
 
     # --- Calculation Parameters ---
-    "waste_redistribution": True,                  # Enable waste redistribution
+    "waste_redistribution": False,                  # Enable waste redistribution
     "use_scan_resolution_as_slice_thickness": True, # Use scan resolution to set slice thickness, automatically calculated from the point cloud
     "total_weight": 3333.3,                         # Total weight of the loaf in grams
-    "target_weight": 150.0,                         # Target weight for each portion
+    "target_weight": 250.0,                         # Target weight for each portion
     "slice_thickness": 0.5,                         # Thickness of each slice in mm
     "no_interp": True,                              # Disable interpolation for slice calculations
     "flat_bottom": False,                           # Use flat bottom mode
@@ -269,11 +269,6 @@ def get_params_from_plc(ip_address, slot, tag_map, log_func):
             
             # Read all tags in one request for efficiency
             results = comm.Read(tags_to_read)
-            
-            #if comm.StatusCode != 0:
-                #log_func(f"    ...ERROR communicating with PLC: {comm.Status}")
-                #return {}
-
             log_func("    ...Successfully connected and read tags.")
             
             # Map the results back to our script's parameter names
@@ -335,11 +330,6 @@ def write_results_to_plc(ip_address, slot, single_results_dict, portion_list_of_
             comm.ProcessorSlot = slot
             
             response = comm.Write(tags_to_write)
-            
-            #if comm.StatusCode != 0:
-                #log_func(f"    ...ERROR communicating with PLC during write: {comm.Status}")
-                #return False
-
             log_func("    ...Successfully wrote results to PLC.")
             # Optional: Log a few key values to confirm
             for tag, value in tags_to_write[:5]: # Log first 5 writes
@@ -453,6 +443,7 @@ def process_single_file(xyz_file_path, log_messages):
         resolution_stats = None 
         if current_pipeline_params.get("use_scan_resolution_as_slice_thickness", False):
             log("\n    ...'Use Scanner Resolution' is ENABLED. Finding scan resolution...")
+            scan_resolution_starttime = time.time()
             resolution_stats = analyze_y_resolution(current_points_df)
             if resolution_stats and 'mean_spacing_mm' in resolution_stats:
                 measured_res = resolution_stats['mean_spacing_mm']
@@ -461,7 +452,7 @@ def process_single_file(xyz_file_path, log_messages):
                     final_slice_thickness = measured_res
                     current_pipeline_params['slice_thickness'] = final_slice_thickness
                     log(f"    ...SUCCESS: Using measured resolution of {final_slice_thickness:.4f} mm as slice thickness.")
-                    log(f"    ...Finding scan resolution took {time.time() - load_starttime:.2f} seconds.")
+                    log(f"    ...Finding scan resolution took {time.time() - scan_resolution_starttime:.2f} seconds.")
                 else:
                     log(f"    ...WARNING: Measured resolution ({measured_res:.4f} mm) is outside safe limits. Reverting to default slice thickness.")
             else:
