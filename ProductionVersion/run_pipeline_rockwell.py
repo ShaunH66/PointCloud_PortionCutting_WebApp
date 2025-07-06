@@ -85,7 +85,7 @@ DEFAULT_PIPELINE_PARAMS = {
     "waste_redistribution": False,                  # Enable waste redistribution
     "use_scan_resolution_as_slice_thickness": True, # Use scan resolution to set slice thickness, automatically calculated from the point cloud
     "total_weight": 3333.3,                         # Total weight of the loaf in grams
-    "target_weight": 250.0,                         # Target weight for each portion
+    "target_weight": 350.0,                         # Target weight for each portion
     "slice_thickness": 0.5,                         # Thickness of each slice in mm
     "no_interp": True,                              # Disable interpolation for slice calculations
     "flat_bottom": False,                           # Use flat bottom mode
@@ -399,7 +399,6 @@ def process_single_file(xyz_file_path, log_messages):
         log(f"\n[1/7] Loading raw data from: {os.path.basename(xyz_file_path)}")
         load_starttime = time.time()
         points_numpy_array = load_point_cloud_from_file(xyz_file_path)
-        log(f"    ...File loaded in {time.time() - load_starttime:.2f} seconds.")
         
         if points_numpy_array is None or points_numpy_array.shape[0] == 0:
             log("Aborting due to file loading error or empty cloud.")
@@ -407,6 +406,7 @@ def process_single_file(xyz_file_path, log_messages):
         current_points_df = pd.DataFrame(
             points_numpy_array, columns=['x', 'y', 'z'])
         log(f"    ...Loaded {len(current_points_df)} raw points.")
+        log(f"    ...File loaded in {time.time() - load_starttime:.2f} seconds.")
         
         processed_df = current_points_df.copy()
 
@@ -435,9 +435,8 @@ def process_single_file(xyz_file_path, log_messages):
             log("\n[2/7] Applying PCA Alignment...")
             pca_starttime = time.time()
             processed_df = align_point_cloud_with_pca(processed_df)
-            log(f"    ...PCA Alignment took {time.time() - pca_starttime:.2f} seconds.")
-
-            log("    ...PCA Alignment Complete.")
+            log(f"    ...PCA Alignment Complete.")
+            log(f"   ...PCA Alignment took {time.time() - pca_starttime:.2f} seconds.")
         else:
             log("\n[2/7] PCA Alignment skipped (disabled in config).")
 
@@ -473,7 +472,7 @@ def process_single_file(xyz_file_path, log_messages):
                         "mult": ror_params.get("ror_radius_multiplier_est", 2.0),
                         "ror_samples": ror_params.get("ror_samples", 500)
                     }
-                    
+                    ror_starttime = time.time()
                     # Call the function with the clean arguments
                     est_radius, est_msg = estimate_ror_radius_util_o3d(
                         pcd_for_processing, **estimation_args
@@ -486,6 +485,7 @@ def process_single_file(xyz_file_path, log_messages):
                     radius=float(ror_params.get("ror_radius", 5.0))
                 )
                 log(f"    ...ROR Filter removed {n_before - len(pcd_filtered.points)} points.")
+                log(f"    ...ROR Filter took {time.time() - ror_starttime:.2f} seconds.")
                 pcd_for_processing = pcd_filtered 
             else:
                 log("    ...ROR Filter skipped: Open3D not installed.")
@@ -582,7 +582,6 @@ def process_single_file(xyz_file_path, log_messages):
         
         # --- Step 7: Write Results back to PLC ---
         if PLC_MODE and calc_results:
-            PLC_write_starttime = time.time()
             log("\n[6/7] Writing results back to PLC...")
             
             current_counter = current_pipeline_params.get("completion_counter", 0)
@@ -628,6 +627,7 @@ def process_single_file(xyz_file_path, log_messages):
                 })
 
             # --- C. Call the write function ---
+            PLC_write_starttime = time.time()
             write_results_to_plc(
                 PLC_IP_ADDRESS, 
                 PLC_PROCESSOR_SLOT, 
