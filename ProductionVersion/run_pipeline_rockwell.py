@@ -19,7 +19,6 @@ try:
     from functionlib import (
         align_point_cloud_with_pca,
         estimate_ror_radius_util_o3d,
-        apply_ror_filter_to_df,
         perform_portion_calculation,
         start_o3d_visualization,
         launch_o3d_viewer_with_cuts,
@@ -411,40 +410,11 @@ def process_single_file(xyz_file_path, log_messages):
         
         processed_df = current_points_df.copy()
 
-        # --- Step 2: PCA Alignment (Optional) ---
-        if current_pipeline_params.get("pca_align"):
-            log("\n[2/7] Applying PCA Alignment...")
-            pca_starttime = time.time()
-            processed_df = align_point_cloud_with_pca(processed_df)
-            log(f"    ...PCA Alignment took {time.time() - pca_starttime:.2f} seconds.")
-
-            log("    ...PCA Alignment Complete.")
-        else:
-            log("\n[2/7] PCA Alignment skipped (disabled in config).")
-
-        # --- Step 3: Auto Downsample (Optional) ---
-        if current_pipeline_params.get("enable_auto_downsample") and len(processed_df) > current_pipeline_params.get("auto_downsample_threshold", 9e9):
-            threshold = current_pipeline_params.get("auto_downsample_threshold")
-            log(f"\n[3/7] Applying Auto-Downsample (Threshold: {threshold:,})...")
-            auto_downsample_starttime = time.time()
-            if _open3d_installed:
-                pcd_ds = o3d.geometry.PointCloud()
-                pcd_ds.points = o3d.utility.Vector3dVector(processed_df.to_numpy())
-                ratio = threshold / len(processed_df)
-                processed_df = pd.DataFrame(np.asarray(
-                    pcd_ds.random_down_sample(ratio).points), columns=['x', 'y', 'z'])
-                log(f"    ...Downsampled to {len(processed_df)} points.")
-                log(f"    ...Auto-Downsample took {time.time() - auto_downsample_starttime:.2f} seconds.")
-            else:
-                log("    ...Auto-Downsample skipped: Open3D not installed.")
-        else:
-            log("\n[3/7] Auto-Downsample skipped (not needed or disabled).")
-        
         resolution_stats = None 
         if current_pipeline_params.get("use_scan_resolution_as_slice_thickness", False):
             log("\n    ...'Use Scanner Resolution' is ENABLED. Finding scan resolution...")
             scan_resolution_starttime = time.time()
-            resolution_stats = analyze_y_resolution(current_points_df)
+            resolution_stats = analyze_y_resolution(processed_df)
             if resolution_stats and 'mean_spacing_mm' in resolution_stats:
                 measured_res = resolution_stats['mean_spacing_mm']
                 # Safety check: ensure the measured resolution is a sane value
@@ -460,44 +430,75 @@ def process_single_file(xyz_file_path, log_messages):
         else:
             log("    ...'Use Scan Resolution' is DISABLED. Using default/PLC slice thickness.")
             
-        # --- Step 4: Radius Outlier Removal (Optional) ---
-        if current_pipeline_params.get("apply_ror"):
+        # --- Step 2: PCA Alignment (Optional) ---
+        if current_pipeline_params.get("pca_align"):
+            log("\n[2/7] Applying PCA Alignment...")
+            pca_starttime = time.time()
+            processed_df = align_point_cloud_with_pca(processed_df)
+            log(f"    ...PCA Alignment took {time.time() - pca_starttime:.2f} seconds.")
+
+            log("    ...PCA Alignment Complete.")
+        else:
+            log("\n[2/7] PCA Alignment skipped (disabled in config).")
+
+        # --- Convert to Open3D object ONCE for all subsequent steps ---
+        pcd_for_processing = o3d.geometry.PointCloud()
+        pcd_for_processing.points = o3d.utility.Vector3dVector(processed_df.values)
+        
+       # --- Step 3: Auto Downsample (Operates on the Open3D object) ---
+        if current_pipeline_params['enable_auto_downsample'] and len(pcd_for_processing.points) > current_pipeline_params['auto_downsample_threshold']:
+            threshold = current_pipeline_params['auto_downsample_threshold']
+            log(f"\n[3/7] Applying Auto-Downsample (Threshold: {threshold:,})...")
+            auto_downsample_starttime = time.time()
+            if _open3d_installed:
+                ratio = threshold / len(pcd_for_processing.points)
+                # Overwrite the pcd object with the downsampled version
+                pcd_for_processing = pcd_for_processing.random_down_sample(ratio)
+                log(f"    ...Downsampled to {len(pcd_for_processing.points):,} points.")
+                log(f"    ...Auto-Downsample took {time.time() - auto_downsample_starttime:.2f} seconds.")
+            else:
+                log("    ...Auto-Downsample skipped: Open3D not installed.")
+        else:
+            log("\n[3/7] Auto-Downsample skipped (not needed or disabled).")
+
+        # --- Step 4: Radius Outlier Removal (Operates on the same Open3D object) ---
+        if current_pipeline_params['apply_ror']:
             log("\n[4/7] Applying Radius Outlier Removal Filter...")
             if _open3d_installed:
-                ror_starttime = time.time()
-                pcd_ror = o3d.geometry.PointCloud()
-                pcd_ror.points = o3d.utility.Vector3dVector(
-                    processed_df.to_numpy())
-
+                n_before = len(pcd_for_processing.points)
                 ror_params = current_pipeline_params.copy()
                 if ror_params.get("ror_auto_estimate_radius"):
+                    estimation_args = {
+                        "k_neighbors": ror_params.get("ror_k_for_radius_est", 20),
+                        "mult": ror_params.get("ror_radius_multiplier_est", 2.0),
+                        "ror_samples": ror_params.get("ror_samples", 500)
+                    }
+                    
+                    # Call the function with the clean arguments
                     est_radius, est_msg = estimate_ror_radius_util_o3d(
-                        pcd_ror,
-                        ror_params.get("ror_k_for_radius_est", 20),
-                        ror_params.get("ror_radius_multiplier_est", 2.0),
-                        ror_params.get("ror_samples", 500)
+                        pcd_for_processing, **estimation_args
                     )
                     log(f"    ...ROR Estimation: {est_msg}")
-                    if est_radius:
-                        ror_params["ror_radius"] = est_radius
-
-                n_before = len(processed_df)
-                processed_df, _ = apply_ror_filter_to_df(
-                    processed_df, ror_params.get(
-                        "ror_nb_points", 10), ror_params.get("ror_radius", 0.1)
+                    if est_radius: ror_params["ror_radius"] = est_radius
+                
+                pcd_filtered, _ = pcd_for_processing.remove_radius_outlier(
+                    nb_points=int(ror_params.get("ror_nb_points", 10)),
+                    radius=float(ror_params.get("ror_radius", 5.0))
                 )
-                log(f"    ...ROR Filter removed {n_before - len(processed_df)} points.")
-                log(f"    ...ROR Filter took {time.time() - ror_starttime:.2f} seconds.")
+                log(f"    ...ROR Filter removed {n_before - len(pcd_filtered.points)} points.")
+                pcd_for_processing = pcd_filtered 
             else:
                 log("    ...ROR Filter skipped: Open3D not installed.")
         else:
             log("\n[4/7] ROR Filter skipped (disabled in config).")
+        
+        # --- Final Conversion back to DataFrame for calculation ---
+        final_processed_df = pd.DataFrame(np.asarray(pcd_for_processing.points), columns=['x', 'y', 'z'])
+        final_display_cloud = final_processed_df.copy()
             
-        final_display_cloud = processed_df.copy()
-
         # --- Step 5: Y-Normalization & Final Calculation ---
         log("\n[5/7] Normalizing and Calculating Portions...")
-        df_for_calc = processed_df.copy()
+        df_for_calc = final_display_cloud.copy()
         y_offset = 0.0
         if current_pipeline_params.get("enable_y_normalization"):
             if not df_for_calc.empty:
