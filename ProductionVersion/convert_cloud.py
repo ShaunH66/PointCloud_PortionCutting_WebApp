@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # Description: A command-line utility to convert point cloud files from one
 #              format to another. It supports reading any format handled by
-#              your FunctionLib and writing to common formats like PCD and PLY.
+#              functionlib and writing to common formats like PCD and PLY.
 #
 # Usage:
 #   python convert_cloud.py <input_file> <output_file>
@@ -20,7 +20,7 @@ import argparse # Used for handling command-line arguments
 # --- Import necessary functions from your library ---
 try:
     from functionlib import (
-        load_point_cloud_from_file, # Your universal loader
+        load_point_cloud_from_file,
         _open3d_installed
     )
     if _open3d_installed:
