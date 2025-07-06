@@ -11,6 +11,9 @@ import tempfile
 import os
 import traceback
 
+from joblib import Parallel, delayed
+from tqdm import tqdm
+
 _open3d_installed = False
 try:
     import open3d as o3d
@@ -431,6 +434,56 @@ def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y
                     return np.nan
     return act_vol
 
+
+# def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y):
+#     """
+#     An optimized, vectorized version to recalculate the volume of a specific portion.
+#     """
+#     if p_max_y <= p_min_y + FLOAT_EPSILON:
+#         return 0.0
+
+#     # --- Vectorized Approach ---
+    
+#     # 1. Get all relevant slice start and end points
+#     # We only need to consider slices that could possibly overlap with our portion
+#     relevant_mask = (sorted_y_s < p_max_y) & ((sorted_y_s + slice_inc) > p_min_y)
+    
+#     # If no slices are relevant, volume is zero
+#     if not np.any(relevant_mask):
+#         return 0.0
+        
+#     relevant_y_starts = sorted_y_s[relevant_mask]
+    
+#     # Get the corresponding volumes from the profile dictionary
+#     relevant_vols = np.array([vol_prof.get(y, 0.0) for y in relevant_y_starts])
+    
+#     # 2. Calculate the overlap for all relevant slices at once
+#     slice_starts = relevant_y_starts
+#     slice_ends = relevant_y_starts + slice_inc
+    
+#     # np.maximum and np.minimum perform element-wise operations on the arrays
+#     overlap_starts = np.maximum(slice_starts, p_min_y)
+#     overlap_ends = np.minimum(slice_ends, p_max_y)
+    
+#     # Calculate the length of each overlap segment
+#     overlap_lengths = overlap_ends - overlap_starts
+    
+#     # Ensure overlap lengths are not negative due to floating point issues
+#     overlap_lengths[overlap_lengths < 0] = 0
+    
+#     # 3. Calculate the fraction of each slice that contributes to the portion
+#     # We use a small epsilon to avoid division by zero for zero-length slices
+#     overlap_fractions = overlap_lengths / (slice_inc + FLOAT_EPSILON)
+    
+#     # 4. Calculate the volume contribution of each slice and sum them up
+#     # This is a single, fast vector multiplication and sum
+#     total_volume = np.sum(relevant_vols * overlap_fractions)
+    
+#     if np.isfinite(total_volume) and total_volume >= 0:
+#         return total_volume
+#     else:
+#         # Fallback in case of NaN or other numerical issues
+#         return 0.0
 
 def perform_portion_calculation(
     points_df, total_w, target_w, slice_inc, no_interp, flat_bottom, top_down,
@@ -1193,11 +1246,12 @@ def calculate_with_waste_redistribution(
 
 def analyze_y_resolution(points_df, precision=4):
     """
-    Analyzes the Y-axis resolution from a point cloud DataFrame.
+    Optimized version: Analyzes Y-axis resolution by converting float coordinates
+    to scaled integers, which is faster for unique/sorting operations.
 
     Args:
         points_df (pd.DataFrame): The input point cloud.
-        precision (int): The number of decimal places to round to for grouping layers.
+        precision (int): The number of decimal places to consider for resolution.
 
     Returns:
         dict: A dictionary containing the analysis results, or None if analysis fails.
@@ -1205,35 +1259,48 @@ def analyze_y_resolution(points_df, precision=4):
     if points_df is None or points_df.empty or 'y' not in points_df.columns:
         return None
 
-    y_coords = points_df['y'].to_numpy()
+    # Directly access the underlying NumPy array to avoid potential pandas overhead
+    y_coords = points_df['y'].values
 
-    # Find unique Y-coordinate "layers"
-    unique_y_layers = np.unique(np.round(y_coords, decimals=precision))
+    # 1. Scale floats to integers to avoid floating point comparisons and rounding.
+    #    This is generally much faster for sorting and finding unique values.
+    scaling_factor = 10**precision
+    # We use np.rint and cast to a large integer type to handle the conversion robustly.
+    scaled_y_integers = np.rint(y_coords * scaling_factor).astype(np.int64)
+
+    # 2. Find the unique integer "layers". This is faster than on floats.
+    unique_y_integers = np.unique(scaled_y_integers)
     
-    if len(unique_y_layers) < 2:
+    if len(unique_y_integers) < 2:
         return {
             "error": "Fewer than two unique Y-layers found.",
-            "unique_y_layers": len(unique_y_layers)
+            "unique_y_layers": len(unique_y_integers)
         }
 
-    # Calculate the spacing between each consecutive layer
-    spacings = np.diff(unique_y_layers)
-    spacings = spacings[spacings > 0] # Filter out zero-spacing
+    # 3. Calculate spacings and convert back to original scale
+    # np.diff on a sorted integer array is extremely fast.
+    spacings_scaled = np.diff(unique_y_integers)
+    
+    # Filter out any zero-spacing results
+    spacings_scaled = spacings_scaled[spacings_scaled > 0]
 
-    if len(spacings) == 0:
+    if len(spacings_scaled) == 0:
         return {
             "error": "No positive spacing found between layers.",
-            "unique_y_layers": len(unique_y_layers)
+            "unique_y_layers": len(unique_y_integers)
         }
+    
+    # Convert the integer spacings back to millimeters
+    spacings_mm = spacings_scaled / scaling_factor
 
-    # Calculate and return statistics
+    # 4. Calculate and return statistics
     results = {
-        "mean_spacing_mm": np.mean(spacings),
-        "median_spacing_mm": np.median(spacings),
-        "std_dev_mm": np.std(spacings),
-        "min_spacing_mm": np.min(spacings),
-        "max_spacing_mm": np.max(spacings),
-        "unique_y_layers": len(unique_y_layers),
+        "mean_spacing_mm": np.mean(spacings_mm),
+        "median_spacing_mm": np.median(spacings_mm),
+        "std_dev_mm": np.std(spacings_mm),
+        "min_spacing_mm": np.min(spacings_mm),
+        "max_spacing_mm": np.max(spacings_mm),
+        "unique_y_layers": len(unique_y_integers),
         "total_points_analyzed": len(y_coords)
     }
     
