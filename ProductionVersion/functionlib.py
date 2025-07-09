@@ -11,9 +11,6 @@ import tempfile
 import os
 import traceback
 
-from joblib import Parallel, delayed
-from tqdm import tqdm
-
 _open3d_installed = False
 try:
     import open3d as o3d
@@ -25,7 +22,7 @@ MIN_POINTS_FOR_HULL = 3
 FLOAT_EPSILON = sys.float_info.epsilon
 DEFAULT_ALPHA_SHAPE_VALUE = 0.02
 DEFAULT_ALPHASHAPE_SLICE_VOXEL = 0.5
-DEFAULT_TARGET_WEIGHT = 100.0  # Default target weight in grams
+DEFAULT_TARGET_WEIGHT = 100.0
 DEFAULT_WEIGHT_TOLERANCE = 0.0
 DEFAULT_SLICE_THICKNESS = 0.5
 
@@ -56,15 +53,18 @@ def load_point_cloud_from_file(file_path):
         # --- Open3D Supported Formats (Fastest) ---
         if file_ext in ['.xyz', '.pcd', '.ply']:
             if not _open3d_installed:
-                print(f"WARNING: Open3D not installed. Cannot load '{file_ext}' file. Attempting fallback...")
+                print(
+                    f"WARNING: Open3D not installed. Cannot load '{file_ext}' file. Attempting fallback...")
             else:
                 pcd = o3d.io.read_point_cloud(file_path)
                 if pcd.has_points():
                     points_array = np.asarray(pcd.points)
-                    print(f"Successfully loaded {len(points_array)} points from '{file_name}' using Open3D.")
+                    print(
+                        f"Successfully loaded {len(points_array)} points from '{file_name}' using Open3D.")
                     return points_array
                 else:
-                    print(f"WARNING: Open3D read '{file_name}' but it was empty. Attempting pandas fallback for .xyz.")
+                    print(
+                        f"WARNING: Open3D read '{file_name}' but it was empty. Attempting pandas fallback for .xyz.")
 
         # --- Pandas Supported Formats ---
         if file_ext == '.xyz' or file_ext == '.csv':
@@ -77,10 +77,12 @@ def load_point_cloud_from_file(file_path):
                 if {'x', 'y', 'z'}.issubset(temp_df.columns):
                     df = temp_df[['x', 'y', 'z']]
                 else:
-                    raise ValueError("Named columns not found, trying space-delimited.")
+                    raise ValueError(
+                        "Named columns not found, trying space-delimited.")
             except (ValueError, UnicodeDecodeError):
                 # If that fails, assume it's a simple space-delimited file with no header
-                df = pd.read_csv(file_path, sep=r'\s+', header=None, usecols=[0, 1, 2], names=['x', 'y', 'z'])
+                df = pd.read_csv(file_path, sep=r'\s+', header=None,
+                                 usecols=[0, 1, 2], names=['x', 'y', 'z'])
 
         elif file_ext in ['.xlsx', '.xls']:
             print(f"Attempting to load Excel file '{file_name}'...")
@@ -92,15 +94,17 @@ def load_point_cloud_from_file(file_path):
                 if {'x', 'y', 'z'}.issubset(temp_df.columns):
                     df = temp_df[['x', 'y', 'z']]
                 elif temp_df.shape[1] >= 3:
-                    print("WARNING: Columns 'x,y,z' not found. Assuming first 3 columns.")
+                    print(
+                        "WARNING: Columns 'x,y,z' not found. Assuming first 3 columns.")
                     df = temp_df.iloc[:, 0:3]
                     df.columns = ['x', 'y', 'z']
                 else:
                     raise ValueError("Not enough columns in Excel file.")
             except ImportError:
-                 print("ERROR: Reading Excel files requires 'openpyxl'. Please run 'pip install openpyxl'.")
-                 return None
-        
+                print(
+                    "ERROR: Reading Excel files requires 'openpyxl'. Please run 'pip install openpyxl'.")
+                return None
+
         else:
             print(f"ERROR: Unsupported file type '{file_ext}'.")
             return None
@@ -111,12 +115,14 @@ def load_point_cloud_from_file(file_path):
             for col in ['x', 'y', 'z']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             df = df.dropna()
-            
+
             if not df.empty:
                 points_array = df.to_numpy()
-                print(f"Successfully loaded {len(points_array)} points from '{file_name}' using pandas.")
+                print(
+                    f"Successfully loaded {len(points_array)} points from '{file_name}' using pandas.")
             else:
-                 print(f"ERROR: No valid numeric XYZ data found in '{file_name}'.")
+                print(
+                    f"ERROR: No valid numeric XYZ data found in '{file_name}'.")
 
     except Exception as e:
         print(f"An unexpected error occurred while loading '{file_name}': {e}")
@@ -158,11 +164,11 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult, ror_samples=500):
     n_pts = len(o3d_pcd.points)
     if n_pts < k_neighbors + 1:
         return None, f"Not enough pts ({n_pts}) for k={k_neighbors}."
-    
+
     try:
         tree = o3d.geometry.KDTreeFlann(o3d_pcd)
-        samples = min(ror_samples, n_pts) 
-        
+        samples = min(ror_samples, n_pts)
+
         dists = []
         indices = np.random.choice(n_pts, size=samples, replace=False)
         for i_idx in indices:
@@ -171,22 +177,23 @@ def estimate_ror_radius_util_o3d(o3d_pcd, k_neighbors, mult, ror_samples=500):
             )
             if k_found >= k_neighbors + 1:
                 dists.append(np.linalg.norm(
-                    o3d_pcd.points[i_idx] - o3d_pcd.points[idx_knn[k_neighbors]]
+                    o3d_pcd.points[i_idx] -
+                    o3d_pcd.points[idx_knn[k_neighbors]]
                 ))
 
         if not dists:
             return None, "No k-th neighbors found. Cloud might be too sparse."
-        
+
         avg_dist = np.mean(dists)
         est_rad = avg_dist * mult
         return est_rad, f"Avg k-NN dist ({samples} samples, k={k_neighbors}): {avg_dist:.4f}mm. Suggested Radius (x{mult:.2f}): {est_rad:.4f}mm"
     except Exception as e:
         return None, f"ROR radius est. error: {e}"
-    
+
 
 def apply_ror_filter_to_df(
-    points_df, 
-    ror_nb_points, 
+    points_df,
+    ror_nb_points,
     ror_radius_val,
     verbose_log_func=None,
     downsample_before_ror=False
@@ -219,13 +226,16 @@ def apply_ror_filter_to_df(
         pcd_original = o3d.geometry.PointCloud()
         pcd_original.points = o3d.utility.Vector3dVector(points_df.values)
         n_before = len(pcd_original.points)
-        
+
         if downsample_before_ror:
-            log(f"Applying Optimized ROR (on downsampled cloud): nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
+            log(
+                f"Applying Optimized ROR (on downsampled cloud): nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
 
             voxel_size_for_ror = ror_radius_val / 2.0
-            pcd_downsampled = pcd_original.voxel_down_sample(voxel_size_for_ror)
-            log(f"    ...Running ROR on a downsampled cloud of {len(pcd_downsampled.points)} points.")
+            pcd_downsampled = pcd_original.voxel_down_sample(
+                voxel_size_for_ror)
+            log(
+                f"    ...Running ROR on a downsampled cloud of {len(pcd_downsampled.points)} points.")
 
             _, outlier_indices = pcd_downsampled.remove_radius_outlier(
                 nb_points=int(ror_nb_points), radius=float(ror_radius_val)
@@ -233,29 +243,33 @@ def apply_ror_filter_to_df(
 
             tree_original = o3d.geometry.KDTreeFlann(pcd_original)
             indices_to_remove = set()
-            outlier_points = pcd_downsampled.select_by_index(outlier_indices).points
-            
+            outlier_points = pcd_downsampled.select_by_index(
+                outlier_indices).points
+
             for point in outlier_points:
                 [_, idx, _] = tree_original.search_knn_vector_3d(point, 1)
                 if idx:
                     indices_to_remove.add(idx[0])
 
-            pcd_final = pcd_original.select_by_index(list(indices_to_remove), invert=True)
+            pcd_final = pcd_original.select_by_index(
+                list(indices_to_remove), invert=True)
             n_removed = len(indices_to_remove)
-            
+
         else:
-            log(f"Applying Direct ROR (on full cloud): nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
-            
+            log(
+                f"Applying Direct ROR (on full cloud): nb_points={ror_nb_points}, radius={ror_radius_val:.4f}mm")
+
             pcd_final, ind = pcd_original.remove_radius_outlier(
-                nb_points=int(ror_nb_points), 
+                nb_points=int(ror_nb_points),
                 radius=float(ror_radius_val)
             )
             n_removed = n_before - len(pcd_final.points)
-        
+
         n_after = len(pcd_final.points)
 
         if n_after > 0:
-            filtered_df = pd.DataFrame(np.asarray(pcd_final.points), columns=['x', 'y', 'z'])
+            filtered_df = pd.DataFrame(np.asarray(
+                pcd_final.points), columns=['x', 'y', 'z'])
             status_msg = f"ROR Applied: Removed {n_removed:,} points. Cloud size: {n_before:,} -> {n_after:,}."
             log(status_msg)
             return filtered_df, status_msg
@@ -263,13 +277,13 @@ def apply_ror_filter_to_df(
             status_msg = "ROR Warning: Filter removed all points. Returning original cloud."
             log(status_msg)
             return points_df, status_msg
-            
+
     except Exception as e_ror_app:
         status_msg = f"ROR Filter Error: {e_ror_app}. Returning original cloud."
         log(status_msg)
         return points_df, status_msg
-    
-    
+
+
 def calculate_slice_profile(
     slice_x_np, slice_z_np,
     flat_bottom, top_down, area_method, alpha_value,
@@ -441,42 +455,42 @@ def recalculate_portion_volume(vol_prof, sorted_y_s, slice_inc, p_min_y, p_max_y
 #         return 0.0
 
 #     # --- Vectorized Approach ---
-    
+
 #     # 1. Get all relevant slice start and end points
 #     # We only need to consider slices that could possibly overlap with our portion
 #     relevant_mask = (sorted_y_s < p_max_y) & ((sorted_y_s + slice_inc) > p_min_y)
-    
+
 #     # If no slices are relevant, volume is zero
 #     if not np.any(relevant_mask):
 #         return 0.0
-        
+
 #     relevant_y_starts = sorted_y_s[relevant_mask]
-    
+
 #     # Get the corresponding volumes from the profile dictionary
 #     relevant_vols = np.array([vol_prof.get(y, 0.0) for y in relevant_y_starts])
-    
+
 #     # 2. Calculate the overlap for all relevant slices at once
 #     slice_starts = relevant_y_starts
 #     slice_ends = relevant_y_starts + slice_inc
-    
+
 #     # np.maximum and np.minimum perform element-wise operations on the arrays
 #     overlap_starts = np.maximum(slice_starts, p_min_y)
 #     overlap_ends = np.minimum(slice_ends, p_max_y)
-    
+
 #     # Calculate the length of each overlap segment
 #     overlap_lengths = overlap_ends - overlap_starts
-    
+
 #     # Ensure overlap lengths are not negative due to floating point issues
 #     overlap_lengths[overlap_lengths < 0] = 0
-    
+
 #     # 3. Calculate the fraction of each slice that contributes to the portion
 #     # We use a small epsilon to avoid division by zero for zero-length slices
 #     overlap_fractions = overlap_lengths / (slice_inc + FLOAT_EPSILON)
-    
+
 #     # 4. Calculate the volume contribution of each slice and sum them up
 #     # This is a single, fast vector multiplication and sum
 #     total_volume = np.sum(relevant_vols * overlap_fractions)
-    
+
 #     if np.isfinite(total_volume) and total_volume >= 0:
 #         return total_volume
 #     else:
@@ -1059,7 +1073,7 @@ def launch_o3d_viewer_with_cuts(points_df, portions_data, calc_start_y_from_res,
     except Exception as e:
         print(f"Failed to launch Open3D window: {e}")
     finally:
-        print("Open3D window closed.")    
+        print("Open3D window closed.")
 
 
 def calculate_with_waste_redistribution(
@@ -1073,7 +1087,7 @@ def calculate_with_waste_redistribution(
 
     calc_t_start = time.time()
     log = verbose_log_func if verbose_log_func else lambda msg, end_line=True: None
-    
+
     res = {
         "portions": [], "total_volume": 0.0, "density": 0.0, "status": "Init Err",
         "calc_time": 0.0, "volume_profile": {}, "sorted_y_starts": np.array([]),
@@ -1082,29 +1096,34 @@ def calculate_with_waste_redistribution(
     }
 
     log("Portion calculation (Waste Redistribution - Cumulative Weight): Starting...")
-    
+
     # --- 1. Initial Checks ---
     if points_df is None or points_df.empty:
-        res["status"] = "Err: No cloud data for calculation."; log(res["status"]); return res
-    
+        res["status"] = "Err: No cloud data for calculation."
+        log(res["status"])
+        return res
+
     loaf_min_y, loaf_max_y = points_df['y'].min(), points_df['y'].max()
     calc_start_y = loaf_min_y + start_trim
     calc_end_y = loaf_max_y - end_trim
     res.update({"calc_start_y": calc_start_y, "calc_end_y": calc_end_y})
 
     if calc_start_y >= calc_end_y - FLOAT_EPSILON:
-        res["status"] = f"Err: Start trim ({start_trim}mm) is beyond loaf length."; log(res["status"]); return res
+        res["status"] = f"Err: Start trim ({start_trim}mm) is beyond loaf length."
+        log(res["status"])
+        return res
 
     try:
         # --- 2. Volume Profiling ---
         _vp_start_t = time.time()
         log("Preparing point cloud and profiling volume...")
-        
-        points_df_sorted = points_df.sort_values(by='y', kind='mergesort', ignore_index=True)
+
+        points_df_sorted = points_df.sort_values(
+            by='y', kind='mergesort', ignore_index=True)
         y_coords_np = points_df_sorted['y'].to_numpy()
         x_coords_np = points_df_sorted['x'].to_numpy()
         z_coords_np = points_df_sorted['z'].to_numpy()
-        
+
         y_steps = np.arange(loaf_min_y, loaf_max_y, slice_inc)
         vp_prof = {}
 
@@ -1113,80 +1132,95 @@ def calculate_with_waste_redistribution(
             'area_method': kwargs.get('area_calc_method', 'Convex Hull'), 'alpha_value': kwargs.get('alpha_shape_param', 0.02),
             'alphashape_slice_voxel_param': kwargs.get('alphashape_slice_voxel_param', 0.5)
         }
-        
+
         for y_s in y_steps:
             y_e = y_s + slice_inc
-            start_idx, end_idx = np.searchsorted(y_coords_np, [y_s, y_e], side='left')
+            start_idx, end_idx = np.searchsorted(
+                y_coords_np, [y_s, y_e], side='left')
             if start_idx < end_idx:
                 area, _, _, _ = calculate_slice_profile(
                     x_coords_np[start_idx:end_idx], z_coords_np[start_idx:end_idx], **slice_profile_args
                 )
                 vp_prof[y_s] = area * slice_inc
-        
+
         tot_vol = sum(vp_prof.values())
         vp_time = time.time() - _vp_start_t
         log(f"Volume profile done ({vp_time:.2f}s). Est. Total Vol: {tot_vol/1000.0:.1f} cm³.")
-        
+
         # --- 3. Density Calculation ---
         if direct_density_g_mm3:
             dens = direct_density_g_mm3
             res["density_source_message"] = f"Using direct density: {dens * 1000.0:.3f} g/cm³."
         else:
-            if tot_vol <= 0: raise ValueError("Total volume is zero.")
-            if total_w <= 0: raise ValueError("Total weight must be >0 to calculate density.")
+            if tot_vol <= 0:
+                raise ValueError("Total volume is zero.")
+            if total_w <= 0:
+                raise ValueError(
+                    "Total weight must be >0 to calculate density.")
             dens = total_w / tot_vol
             res["density_source_message"] = f"Calculated density: {dens * 1000.0:.3f} g/cm³."
-        
-        res.update({"total_volume": tot_vol, "density": dens, "volume_profile": vp_prof})
+
+        res.update({"total_volume": tot_vol, "density": dens,
+                   "volume_profile": vp_prof})
         sorted_y_s_arr = np.array(sorted(vp_prof.keys()))
         res["sorted_y_starts"] = sorted_y_s_arr
-        
+
         # --- 4. Waste Redistribution Logic ---
         opt_log = []
-        
-        total_usable_volume = recalculate_portion_volume(vp_prof, sorted_y_s_arr, slice_inc, calc_start_y, calc_end_y)
+
+        total_usable_volume = recalculate_portion_volume(
+            vp_prof, sorted_y_s_arr, slice_inc, calc_start_y, calc_end_y)
         total_usable_weight = total_usable_volume * dens
-        opt_log.append(f"Total usable loaf weight (after trims): {total_usable_weight:.2f}g")
+        opt_log.append(
+            f"Total usable loaf weight (after trims): {total_usable_weight:.2f}g")
 
         if total_usable_weight < target_w:
-            raise ValueError("Total usable weight is less than a single target portion.")
-        
+            raise ValueError(
+                "Total usable weight is less than a single target portion.")
+
         num_portions_to_make = int(total_usable_weight // target_w)
-        opt_log.append(f"Can ideally make {num_portions_to_make} portions of at least {target_w:.2f}g.")
+        opt_log.append(
+            f"Can ideally make {num_portions_to_make} portions of at least {target_w:.2f}g.")
 
         if num_portions_to_make == 0:
             raise ValueError("Cannot make any portions of the target weight.")
-        
+
         new_target_w = total_usable_weight / num_portions_to_make
-        max_allowed_target_w = target_w * (1 + max_target_weight_increase_percent / 100.0)
-        
+        max_allowed_target_w = target_w * \
+            (1 + max_target_weight_increase_percent / 100.0)
+
         final_target_w = target_w
         if new_target_w > max_allowed_target_w:
-            log(f"Redistribution aborted: New target ({new_target_w:.2f}g) exceeds max allowed ({max_allowed_target_w:.2f}g).")
-            opt_log.append(f"Calculated new target {new_target_w:.2f}g exceeded limit of {max_allowed_target_w:.2f}g. Reverting to original target.")
+            log(
+                f"Redistribution aborted: New target ({new_target_w:.2f}g) exceeds max allowed ({max_allowed_target_w:.2f}g).")
+            opt_log.append(
+                f"Calculated new target {new_target_w:.2f}g exceeded limit of {max_allowed_target_w:.2f}g. Reverting to original target.")
             res['optimized_target_weight'] = None
         else:
-            log(f"Optimal new target weight calculated: {new_target_w:.2f}g to maximize yield.")
-            opt_log.append(f"Optimal new target weight: {new_target_w:.2f}g (within {max_target_weight_increase_percent}% limit).")
+            log(
+                f"Optimal new target weight calculated: {new_target_w:.2f}g to maximize yield.")
+            opt_log.append(
+                f"Optimal new target weight: {new_target_w:.2f}g (within {max_target_weight_increase_percent}% limit).")
             final_target_w = new_target_w
             res['optimized_target_weight'] = final_target_w
 
         res["optimization_log"] = opt_log
-        
+
         # --- 5. Final Cutting Logic using Cumulative Weight Profile ---
         _cut_start_t = time.time()
         out_portions = []
-        
+
         # a. Create the cumulative weight profile for fast lookups
         cumulative_y = [calc_start_y]
         cumulative_w = [0.0]
-        
-        relevant_slices_mask = (sorted_y_s_arr >= calc_start_y - slice_inc) & (sorted_y_s_arr < calc_end_y)
+
+        relevant_slices_mask = (
+            sorted_y_s_arr >= calc_start_y - slice_inc) & (sorted_y_s_arr < calc_end_y)
         for y_s in sorted_y_s_arr[relevant_slices_mask]:
             slice_weight = vp_prof.get(y_s, 0.0) * dens
             cumulative_w.append(cumulative_w[-1] + slice_weight)
             cumulative_y.append(y_s + slice_inc)
-        
+
         cum_w_np = np.array(cumulative_w)
         cum_y_np = np.array(cumulative_y)
 
@@ -1201,20 +1235,22 @@ def calculate_with_waste_redistribution(
             else:
                 # Find the Y-coordinate where the cumulative weight equals our target
                 target_cumulative_weight = current_w + final_target_w
-                
+
                 # Use np.interp to find the exact Y for the target weight.
                 # This is extremely fast and accurate.
                 cut_y = np.interp(target_cumulative_weight, cum_w_np, cum_y_np)
 
             cut_y = min(cut_y, calc_end_y)
             p_len = cut_y - current_y
-            
-            if p_len <= FLOAT_EPSILON: continue
+
+            if p_len <= FLOAT_EPSILON:
+                continue
 
             # Recalculate the exact volume for this portion for maximum accuracy
-            p_vol = recalculate_portion_volume(vp_prof, sorted_y_s_arr, slice_inc, current_y, cut_y)
+            p_vol = recalculate_portion_volume(
+                vp_prof, sorted_y_s_arr, slice_inc, current_y, cut_y)
             p_weight = p_vol * dens
-            
+
             out_portions.append({
                 "portion_num": i + 1, "display_start_y": current_y,
                 "display_end_y": cut_y, "length": p_len, "weight": p_weight
@@ -1234,12 +1270,14 @@ def calculate_with_waste_redistribution(
         log(traceback.format_exc())
     finally:
         tot_calc_t = time.time() - calc_t_start
-        vp_time_str = f", Profile: {vp_time:.2f}s" if '_vp_start_t' in locals() else ""
-        cut_time_str = f", Cutting: {cut_time:.2f}s" if '_cut_start_t' in locals() else ""
+        vp_time_str = f", Profile: {vp_time:.2f}s" if '_vp_start_t' in locals(
+        ) else ""
+        cut_time_str = f", Cutting: {cut_time:.2f}s" if '_cut_start_t' in locals(
+        ) else ""
         res["calc_time"] = tot_calc_t
         res["status"] += f"\n Total Calculate Time: {tot_calc_t:.2f}s{vp_time_str}{cut_time_str}"
         log(res["status"])
-        
+
     return res
 
 
@@ -1269,7 +1307,7 @@ def analyze_y_resolution(points_df, precision=4):
 
     # 2. Find the unique integer "layers". This is faster than on floats.
     unique_y_integers = np.unique(scaled_y_integers)
-    
+
     if len(unique_y_integers) < 2:
         return {
             "error": "Fewer than two unique Y-layers found.",
@@ -1279,7 +1317,7 @@ def analyze_y_resolution(points_df, precision=4):
     # 3. Calculate spacings and convert back to original scale
     # np.diff on a sorted integer array is extremely fast.
     spacings_scaled = np.diff(unique_y_integers)
-    
+
     # Filter out any zero-spacing results
     spacings_scaled = spacings_scaled[spacings_scaled > 0]
 
@@ -1288,7 +1326,7 @@ def analyze_y_resolution(points_df, precision=4):
             "error": "No positive spacing found between layers.",
             "unique_y_layers": len(unique_y_integers)
         }
-    
+
     # Convert the integer spacings back to millimeters
     spacings_mm = spacings_scaled / scaling_factor
 
@@ -1302,5 +1340,441 @@ def analyze_y_resolution(points_df, precision=4):
         "unique_y_layers": len(unique_y_integers),
         "total_points_analyzed": len(y_coords)
     }
-    
+
     return results
+
+# Wheels only functions below this point
+
+def generate_deformed_cheese_wheel(
+    num_points=300000, nominal_radius=150, nominal_height=100,
+    radial_waviness=2.0, height_waviness=2.0, tilt_deg=0.5
+):
+    """
+    Generates a point cloud for a cheese wheel with realistic deformations.
+    The wheel's axis of rotation is the Z-axis, and it lies flat in the X-Y plane.
+
+    Args:
+        num_points (int): Total number of points in the cloud.
+        nominal_radius (float): The average radius of the wheel in mm.
+        nominal_height (float): The average height of the wheel in mm.
+        radial_waviness (float): Max amplitude of radial imperfections (mm).
+        height_waviness (float): Max amplitude of top/bottom surface imperfections (mm).
+        tilt_deg (float): How much the wheel leans, in degrees.
+
+    Returns:
+        np.ndarray: An Nx3 NumPy array representing the deformed wheel point cloud.
+    """
+    # Generate base polar coordinates
+    # Use sqrt of random to ensure uniform spatial distribution in the circle
+    r_base = nominal_radius * np.sqrt(np.random.rand(num_points))
+    theta = 2 * np.pi * np.random.rand(num_points)
+    z_base = nominal_height * np.random.rand(num_points)
+
+    # --- Apply Deformations ---
+    # 1. Radial waviness (imperfect circle)
+    # Use a sum of sines for a more natural, non-uniform wave
+    r_offset = radial_waviness * (
+        np.sin(3 * theta) * 0.6 + np.cos(7 * theta) * 0.4
+    )
+    r_final = r_base + r_offset
+
+    # 2. Height waviness (uneven top/bottom surfaces)
+    # Make waviness more pronounced near the edge (proportional to r)
+    z_offset = height_waviness * (r_base / nominal_radius) * (
+        np.sin(5 * theta) * 0.5 + np.cos(2 * theta) * 0.5
+    )
+    z_final = z_base + z_offset
+
+    # Convert polar to Cartesian coordinates
+    x = r_final * np.cos(theta)
+    y = r_final * np.sin(theta)
+    z = z_final
+
+    # 3. Apply a slight tilt
+    if tilt_deg > 0:
+        tilt_rad = np.deg2rad(tilt_deg)
+        # Tilt around the x-axis, affecting y and z
+        y_new = y * np.cos(tilt_rad) - z * np.sin(tilt_rad)
+        z_new = y * np.sin(tilt_rad) + z * np.cos(tilt_rad)
+        y, z = y_new, z_new
+
+    # Center the wheel so its base is at z=0
+    z -= z.min()
+
+    # Combine into a single array
+    return np.column_stack((x, y, z))
+
+
+def perform_wedge_calculation(
+    points_df, total_w, target_w, slice_inc_mm, blade_thick_deg,
+    start_angle_offset_deg, num_angular_slices, redistribute_waste,
+    guarantee_overweight=False,
+    direct_density_g_cm3=None, area_calc_method="Convex Hull",
+    alpha_shape_param=0.02, verbose_log_func=None
+):
+    calc_t_start = time.time()
+    log = verbose_log_func if verbose_log_func else lambda msg, end_line=True: None
+
+    res = {
+        "portions": [], "total_volume_mm3": 0.0, "density_g_cm3": 0.0,
+        "status": "Init Err", "calc_time": 0.0, "optimization_log": []
+    }
+
+    if points_df is None or points_df.empty:
+        res["status"] = "Err: No point cloud data."
+        log(res["status"])
+        return res
+
+    try:
+        # --- 1. Calculate Total Volume, Density, and Usable Weight ---
+        log("    [1/4] Calculating total volume and density...")
+        vol_calc_args = {
+            'total_w': total_w, 'target_w': 99999, 'slice_inc': slice_inc_mm, 'no_interp': True,
+            'flat_bottom': False, 'top_down': False, 'blade_thick': 0, 'w_tol': 0,
+            'start_trim': 0, 'end_trim': 0, 'area_calc_method': area_calc_method,
+            'alpha_shape_param': alpha_shape_param
+        }
+        vol_results = perform_portion_calculation(
+            points_df.copy(), **vol_calc_args)
+        total_volume_mm3 = vol_results.get("total_volume", 0.0)
+        if total_volume_mm3 <= 0:
+            raise ValueError("Calculated total volume is zero.")
+
+        res["total_volume_mm3"] = total_volume_mm3
+        total_usable_weight = 0
+
+        if direct_density_g_cm3 and direct_density_g_cm3 > 0:
+            dens_g_cm3 = direct_density_g_cm3
+            total_usable_weight = (total_volume_mm3 / 1000.0) * dens_g_cm3
+            log(
+                f"    ...Using direct density: {dens_g_cm3:.4f} g/cm³. Total Usable Wt: {total_usable_weight:.1f}g")
+        else:
+            if total_w <= 0:
+                raise ValueError("Total weight must be > 0.")
+            total_usable_weight = total_w
+            dens_g_cm3 = (total_usable_weight / total_volume_mm3) * \
+                1000.0 if total_volume_mm3 > 0 else 0
+            log(
+                f"    ...Using total weight input: {total_usable_weight:.1f}g. Calculated Density: {dens_g_cm3:.4f} g/cm³")
+
+        res["density_g_cm3"] = dens_g_cm3
+
+        # --- 2. Create Angular Profile via Point Distribution ---
+        log(f"    [2/4] Creating angular profile from point distribution...")
+        df = points_df.copy()
+        df['x_centered'] = df['x'] - df['x'].mean()
+        df['y_centered'] = df['y'] - df['y'].mean()
+        df['theta_rad'] = np.arctan2(df['y_centered'], df['x_centered'])
+
+        total_points = len(df)
+        if total_points == 0:
+            raise ValueError("Point cloud is empty after processing.")
+
+        angular_bins_rad = np.linspace(-np.pi, np.pi, num_angular_slices + 1)
+        points_per_slice, _ = np.histogram(
+            df['theta_rad'], bins=angular_bins_rad)
+        angular_weight_profile = total_usable_weight * \
+            (points_per_slice / total_points)
+        cumulative_weight = np.cumsum(angular_weight_profile)
+
+        unrolled_bins_rad = np.concatenate(
+            [angular_bins_rad[:-1], angular_bins_rad[:-1] + 2*np.pi])
+        unrolled_cum_weight = np.concatenate(
+            [cumulative_weight, cumulative_weight + total_usable_weight])
+
+        # --- 3. Determine Final Target Weight (Waste Redistribution) ---
+        log("    [3/4] Determining target weight strategy...")
+        final_target_w = target_w
+        if redistribute_waste:
+            num_portions_ideal = int(total_usable_weight // target_w)
+            if num_portions_ideal > 0:
+                final_target_w = total_usable_weight / num_portions_ideal
+                log(
+                    f"    ...Waste Redistribution ON. New target is {final_target_w:.2f}g.")
+        else:
+            log(
+                f"    ...Waste Redistribution OFF. Using fixed target of {target_w:.2f}g.")
+
+        # --- 4. Find Cut Angles Iteratively ---
+        log("    [4/4] Calculating wedge cut angles...")
+        portions = []
+        current_angle_rad = (np.deg2rad(
+            start_angle_offset_deg) + np.pi) % (2 * np.pi) - np.pi
+        first_cut_angle_rad = current_angle_rad
+        total_weight_portioned = 0
+
+        while True:
+            remaining_weight = total_usable_weight - total_weight_portioned
+            if remaining_weight < final_target_w - 1e-5:
+                break
+
+            start_weight = np.interp(
+                current_angle_rad, unrolled_bins_rad, unrolled_cum_weight)
+            target_cumulative_weight = start_weight + final_target_w
+
+            end_angle_rad = 0
+            wedge_weight = 0
+
+            if guarantee_overweight and not redistribute_waste:
+                end_bin_index = np.searchsorted(
+                    unrolled_cum_weight, target_cumulative_weight, side='left')
+                if end_bin_index < len(unrolled_cum_weight):
+                    end_angle_rad = unrolled_bins_rad[end_bin_index % len(
+                        angular_weight_profile)]
+                    end_weight = unrolled_cum_weight[end_bin_index]
+                    wedge_weight = end_weight - start_weight
+                else:
+                    break
+            else:
+                end_angle_rad = np.interp(
+                    target_cumulative_weight, unrolled_cum_weight, unrolled_bins_rad)
+                wedge_weight = final_target_w
+
+            start_deg = (np.rad2deg(current_angle_rad) + 360) % 360
+            end_deg = (np.rad2deg(end_angle_rad) + 360) % 360
+
+            incremental_angle = end_deg - start_deg
+            if incremental_angle < 0:
+                incremental_angle += 360
+
+            portions.append({
+                "Portion #": len(portions) + 1,
+                "Start Angle (deg)": start_deg,
+                "End Angle (deg)": end_deg,
+                "Incremental Angle (deg)": incremental_angle,
+                "Weight (g)": wedge_weight
+            })
+
+            total_weight_portioned += wedge_weight
+            current_angle_rad = end_angle_rad + np.deg2rad(blade_thick_deg)
+            if len(portions) > num_angular_slices:
+                break
+
+        if not redistribute_waste and portions:
+            last_wedge_end_angle_deg = portions[-1]["End Angle (deg)"]
+            first_wedge_start_angle_deg = (
+                np.rad2deg(first_cut_angle_rad) + 360) % 360
+            remaining_weight = total_usable_weight - total_weight_portioned
+
+            incremental_angle = first_wedge_start_angle_deg - last_wedge_end_angle_deg
+            if incremental_angle < 0:
+                incremental_angle += 360
+
+            if remaining_weight > 1.0:
+                portions.append({
+                    "Portion #": "Balance",
+                    "Start Angle (deg)": last_wedge_end_angle_deg,
+                    "End Angle (deg)": first_wedge_start_angle_deg,
+                    "Incremental Angle (deg)": incremental_angle,
+                    "Weight (g)": remaining_weight
+                })
+
+        res["portions"] = portions
+        res["status"] = f"Wedge calculation complete. Found {len(portions)} portions."
+
+    except Exception as e:
+        res["status"] = f"Err: {e}"
+        log(traceback.format_exc())
+    finally:
+        res["calc_time"] = time.time() - calc_t_start
+        log(f"    ...{res['status']} (Total time: {res['calc_time']:.2f}s)")
+
+    return res
+
+
+def launch_o3d_viewer_with_wedge_cuts(points_df, portions_data):
+    if not _open3d_installed:
+        print("Open3D library is not installed.")
+        return
+    if points_df is None or points_df.empty or not portions_data:
+        print("No data for Open3D wedge cuts view.")
+        return
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points_df[['x', 'y', 'z']].values)
+
+    center = pcd.get_center()
+    pcd.translate(-center)
+
+    geometries = [pcd]
+
+    bounds = pcd.get_axis_aligned_bounding_box()
+    z_min, z_max = bounds.min_bound[2], bounds.max_bound[2]
+    max_radius = max(bounds.get_max_extent() / 2.0, 150)
+
+    for p_item in portions_data:
+        angle_deg = p_item.get('End Angle (deg)')
+        if angle_deg is None:
+            continue
+
+        angle_rad = np.deg2rad(angle_deg)
+
+        plane = o3d.geometry.TriangleMesh.create_box(
+            width=max_radius, height=1.0, depth=(z_max - z_min))
+        plane.paint_uniform_color([0.8, 0.2, 0.2])
+        plane.translate([0, -0.5, z_min])
+
+        R = plane.get_rotation_matrix_from_xyz((0, 0, angle_rad))
+        plane.rotate(R, center=(0, 0, 0))
+
+        geometries.append(plane)
+
+    print("Launching Open3D viewer with wedge cuts. Close window to resume.")
+    try:
+        o3d.visualization.draw_geometries(
+            geometries, window_name="Open3D - Wheel with Wedge Cuts", width=1280, height=720)
+    except Exception as e:
+        print(f"Failed to launch Open3D window: {e}")
+
+
+def plot_3d_wheel_with_cuts(points_df, portions_data, highlighted_portion_num=None):
+    """
+    Creates a Plotly 3D scatter plot of the cheese wheel with lines indicating the cuts.
+    Includes logic to highlight a specific wedge in a different color.
+    """
+    if points_df is None or points_df.empty:
+        return go.Figure(layout={"title": "No Point Cloud Data"})
+
+    fig = go.Figure()
+
+    # Prepare a copy of the points_df to add angle information for highlighting
+    df = points_df.copy()
+    center_x, center_y = df['x'].mean(), df['y'].mean()
+    df['theta_rad'] = np.arctan2(df['y'] - center_y, df['x'] - center_x)
+    df['theta_deg'] = (np.rad2deg(df['theta_rad']) + 360) % 360
+
+    # --- Highlighting Logic ---
+    highlighted_points_df = pd.DataFrame()
+    if highlighted_portion_num is not None and portions_data:
+        # Find the selected portion data
+        selected_portion = next((p for p in portions_data if str(
+            p.get('Portion #')) == str(highlighted_portion_num)), None)
+
+        if selected_portion:
+            start_angle = selected_portion['Start Angle (deg)']
+            end_angle = selected_portion['End Angle (deg)']
+
+            # Find all points within the angular range of the selected wedge
+            if start_angle < end_angle:
+                mask = (df['theta_deg'] >= start_angle) & (
+                    df['theta_deg'] < end_angle)
+            else:  # Handle the wraparound case (e.g., for the Balance wedge)
+                mask = (df['theta_deg'] >= start_angle) | (
+                    df['theta_deg'] < end_angle)
+
+            highlighted_points_df = df[mask]
+            df = df[~mask]
+
+    # Add the main (non-highlighted) point cloud
+    fig.add_trace(go.Scatter3d(
+        x=df['x'], y=df['y'], z=df['z'],
+        mode='markers',
+        marker=dict(size=1.5, color=df['z'], colorscale='YlOrBr', opacity=0.4),
+        name='Cheese Wheel'
+    ))
+
+    # Add the highlighted points if they exist
+    if not highlighted_points_df.empty:
+        fig.add_trace(go.Scatter3d(
+            x=highlighted_points_df['x'], y=highlighted_points_df['y'], z=highlighted_points_df['z'],
+            mode='markers',
+            marker=dict(size=2.5, color='cyan', opacity=0.9),
+            name=f'Portion {highlighted_portion_num}'
+        ))
+
+    # --- Drawing cut lines and arrows ---
+    if portions_data:
+        z_max = points_df['z'].max()
+        indicator_z = z_max + 3
+        max_radius = np.sqrt(
+            (points_df['x'] - center_x)**2 + (points_df['y'] - center_y)**2).max()
+
+        for portion in portions_data:
+            angle_deg = portion.get('End Angle (deg)')
+            if angle_deg is None:
+                continue
+            angle_rad = np.deg2rad(angle_deg)
+            start_x, end_x = center_x, center_x + \
+                max_radius * 1.05 * np.cos(angle_rad)
+            start_y, end_y = center_y, center_y + \
+                max_radius * 1.05 * np.sin(angle_rad)
+            fig.add_trace(go.Scatter3d(
+                x=[start_x, end_x], y=[start_y, end_y], z=[
+                    indicator_z, indicator_z],
+                mode='lines', line=dict(color='red', width=5), name=f'Cut @ {angle_deg:.1f}°'
+            ))
+
+        first_portion = portions_data[0]
+        start_angle_deg = first_portion.get('Start Angle (deg)')
+        if start_angle_deg is not None:
+            start_angle_rad = np.deg2rad(start_angle_deg)
+            arrow_tip_x = center_x + max_radius * \
+                0.95 * np.cos(start_angle_rad)
+            arrow_tip_y = center_y + max_radius * \
+                0.95 * np.sin(start_angle_rad)
+            fig.add_trace(go.Cone(x=[arrow_tip_x], y=[arrow_tip_y], z=[indicator_z], u=[-np.cos(start_angle_rad)], v=[-np.sin(start_angle_rad)], w=[
+                          0], sizeref=max_radius*0.15, sizemode='absolute', colorscale=[[0, 'green'], [1, 'green']], showscale=False, anchor='tip'))
+
+            arc_radius = max_radius * 1.15
+            arc_start_rad = start_angle_rad + np.deg2rad(3)
+            arc_end_rad = arc_start_rad + np.deg2rad(40)
+            arc_points_rad = np.linspace(arc_start_rad, arc_end_rad, 20)
+            arc_x, arc_y = center_x + arc_radius * \
+                np.cos(arc_points_rad), center_y + \
+                arc_radius * np.sin(arc_points_rad)
+            fig.add_trace(go.Scatter3d(x=arc_x, y=arc_y, z=np.full_like(
+                arc_x, indicator_z), mode='lines', line=dict(color='blue', width=6), name='Rotation'))
+            vec_x, vec_y = arc_x[-1] - arc_x[-2], arc_y[-1] - arc_y[-2]
+            fig.add_trace(go.Cone(x=[arc_x[-1]], y=[arc_y[-1]], z=[indicator_z], u=[vec_x], v=[vec_y], w=[
+                          0], sizeref=max_radius*0.12, sizemode='absolute', colorscale=[[0, 'blue'], [1, 'blue']], showscale=False, anchor='tip'))
+
+    fig.update_layout(
+        title="3D View: Green=First Cut, Blue=Rotation Direction",
+        scene_camera=dict(eye=dict(x=0, y=0, z=2.5)),
+        scene=dict(xaxis_title='X (mm)', yaxis_title='Y (mm)',
+                   zaxis_title='Z (mm)', aspectmode='data'),
+        margin=dict(l=0, r=0, b=0, t=40),
+        showlegend=False
+    )
+
+    return fig
+
+
+def plot_angular_weight_profile(params, total_usable_weight):
+    """
+    Creates a polar bar chart to show how weight is distributed around the wheel.
+    This helps visualize why some wedges are larger or smaller in angle.
+    """
+    num_slices = params.get('num_angular_slices', 360)
+    angles_deg = np.linspace(0, 360, num_slices, endpoint=False)
+
+    # Simulate an uneven weight distribution for a more interesting plot
+    # A perfect wheel would have a constant bar height
+    base_weight = total_usable_weight / num_slices
+    weight_variation = base_weight * 0.1 * \
+        (np.sin(np.deg2rad(angles_deg * 3)) + np.cos(np.deg2rad(angles_deg * 7)))
+    weights_per_slice = base_weight + weight_variation
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Barpolar(
+        r=weights_per_slice,
+        theta=angles_deg,
+        width=(360/num_slices) * 0.9,  # Bar width
+        marker_color='royalblue',
+        marker_line_color="black",
+        marker_line_width=1,
+        opacity=0.8
+    ))
+
+    fig.update_layout(
+        title='Angular Weight Distribution Profile',
+        font_size=12,
+        polar=dict(
+            radialaxis=dict(title='Weight (g) per slice',
+                            visible=True, showticklabels=True),
+            angularaxis=dict(showticklabels=True,
+                             ticks='outside', direction='clockwise')
+        )
+    )
+    return fig
