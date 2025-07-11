@@ -280,43 +280,67 @@ else:
         ["📊 **Summary & 3D View**", "🔬 **Slice Inspector**", "⚙️ **Run Details**"])
 
     with tab_summary:
-        # Give more space to the 3D plot
-        col_3d, col_table = st.columns([5, 5])
+        col_3d, col_table = st.columns([6, 4])
 
         with col_3d:
             st.subheader("3D View of Processed Cloud")
-            if display_cloud is not None and not display_cloud.empty:
-                # Cleaner plot without title
-                fig_3d = plot_3d_loaf(display_cloud, title="")
-                st.plotly_chart(fig_3d, use_container_width=True)
+            show_cuts = st.toggle("Show Cut Planes", value=True)
+            
+            plot_cloud = payload.get("df_for_slice_inspector", display_cloud)
+            
+            if plot_cloud is not None and not plot_cloud.empty:
+                highlighted_num = st.session_state.get('highlighted_stick_portion')
 
+                fig_3d = plot_3d_loaf(
+                    plot_cloud,
+                    portions=calc_results.get("portions", []),
+                    title="",
+                    highlighted_portion_num=highlighted_num,
+                    show_cut_planes=show_cuts
+                )
+                st.plotly_chart(fig_3d, use_container_width=True)
             else:
-                st.warning(
-                    "No point cloud data found in the payload to display.")
+                st.warning("No point cloud data found in the payload to display.")
 
         with col_table:
             st.subheader("Portioning Results")
             if calc_results and calc_results.get("portions"):
                 original_portions = calc_results.get("portions", [])
                 scanner_offset = calc_results.get('y_offset_for_plot', 0.0)
-
-                # Apply start-at-zero logic for the display table
-                block_start_y_real = 0.0
-                if len(original_portions) > 0 and params.get("enable_y_normalization"):
-                    block_start_y_real = original_portions[0]['display_start_y'] + \
-                        scanner_offset
-
+                
                 display_data = []
-                for p in original_portions:
-                    real_start_y = p['display_start_y'] + scanner_offset
-                    real_end_y = p['display_end_y'] + scanner_offset
-                    display_data.append({
-                        "Portion #": p['portion_num'], "Start Y (mm)": real_start_y - block_start_y_real,
-                        "End Y (mm)": real_end_y - block_start_y_real, "Length (mm)": p['length'],
-                        "Weight (g)": p['weight']
-                    })
+                if params.get("enable_y_normalization"):
+                    block_start_y_real = original_portions[0]['display_start_y'] + scanner_offset if original_portions else 0
+                    for p in original_portions:
+                        display_data.append({
+                            "Portion #": p['portion_num'],
+                            "Start Y (mm)": (p['display_start_y'] + scanner_offset) - block_start_y_real,
+                            "End Y (mm)": (p['display_end_y'] + scanner_offset) - block_start_y_real,
+                            "Length (mm)": p['length'],
+                            "Weight (g)": p['weight']
+                        })
+                else:
+                    for p in original_portions:
+                        display_data.append({
+                            "Portion #": p['portion_num'],
+                            "Start Y (mm)": p['display_start_y'] + scanner_offset,
+                            "End Y (mm)": p['display_end_y'] + scanner_offset,
+                            "Length (mm)": p['length'],
+                            "Weight (g)": p['weight']
+                        })
+                
                 res_df = pd.DataFrame(display_data)
+                if 'Portion #' in res_df.columns:
+                    res_df['Portion #'] = res_df['Portion #'].astype(str)
 
+                radio_options = ["None"] + list(res_df["Portion #"])
+                st.radio(
+                    "**Select a Portion to Highlight:**",
+                    options=radio_options,
+                    key='highlighted_stick_portion',
+                    horizontal=True,
+                )
+                
                 st.dataframe(
                     res_df.style.format({
                         'Start Y (mm)': '{:.2f}',
