@@ -773,67 +773,99 @@ def perform_portion_calculation(
     return res
 
 
-def plot_3d_loaf(points_df, portions=None, title="Point Cloud", y_offset=0.0, camera_override=None, selected_colorscale='YlOrBr'):
+def plot_3d_loaf(points_df, portions=None, title="Point Cloud", y_offset=0.0, camera_override=None, selected_colorscale='YlOrBr', highlighted_portion_num=None, show_cut_planes=True):
     if points_df is None or points_df.empty:
         return go.Figure()
+
     fig = go.Figure()
+    
+    df = points_df.copy()
+    highlighted_points_df = pd.DataFrame()
+
+    if highlighted_portion_num is not None and portions:
+        selected_portion = next((p for p in portions if str(p.get('portion_num')) == str(highlighted_portion_num)), None)
+        if selected_portion:
+            start_y = selected_portion['display_start_y']
+            end_y = selected_portion['display_end_y']
+            mask = (df['y'] >= start_y) & (df['y'] < end_y)
+            highlighted_points_df = df[mask]
+            df = df[~mask]
 
     fig.add_trace(go.Scatter3d(
-        x=points_df['x'], y=points_df['y'], z=points_df['z'],
+        x=df['x'], y=df['y'], z=df['z'],
         mode='markers',
-        marker=dict(
-            size=1.5,
-            color=points_df['z'],
-            colorscale=selected_colorscale,
-            opacity=0.7,
-            colorbar=dict(title='Height (Z)'),
-            showscale=False
-        ),
+        marker=dict(size=1.5, color=df['z'], colorscale=selected_colorscale, opacity=0.3),
         name='Point Cloud'
     ))
 
-    if portions and len(portions) > 0:
+    if not highlighted_points_df.empty:
+        fig.add_trace(go.Scatter3d(
+            x=highlighted_points_df['x'], y=highlighted_points_df['y'], z=highlighted_points_df['z'],
+            mode='markers',
+            marker=dict(size=2.5, color='cyan', opacity=0.9),
+            name=f'Portion {highlighted_portion_num}'
+        ))
+
+    if show_cut_planes and portions:
         min_x_plot, max_x_plot = points_df['x'].min(), points_df['x'].max()
         x_rng_plot = max(1.0, max_x_plot - min_x_plot)
         min_z_plot, max_z_plot = points_df['z'].min(), points_df['z'].max()
         z_rng_plot = max(1.0, max_z_plot - min_z_plot)
 
-        # Renamed i to i_plot, p to p_plot_data
         for i_plot, p_plot_data in enumerate(portions):
             cut_y_val = p_plot_data.get('display_end_y')
-
             if cut_y_val is not None and i_plot < len(portions) - 1:
                 fig.add_trace(go.Mesh3d(
-                    x=[min_x_plot - 0.1*x_rng_plot, max_x_plot + 0.1*x_rng_plot,
-                        max_x_plot + 0.1*x_rng_plot, min_x_plot - 0.1*x_rng_plot],
+                    x=[min_x_plot-0.1*x_rng_plot, max_x_plot+0.1*x_rng_plot, max_x_plot+0.1*x_rng_plot, min_x_plot-0.1*x_rng_plot],
                     y=[cut_y_val, cut_y_val, cut_y_val, cut_y_val],
-                    z=[min_z_plot - 0.1*z_rng_plot, min_z_plot - 0.1*z_rng_plot,
-                        max_z_plot + 0.1*z_rng_plot, max_z_plot + 0.1*z_rng_plot],
+                    z=[min_z_plot-0.1*z_rng_plot, min_z_plot-0.1*z_rng_plot, max_z_plot+0.1*z_rng_plot, max_z_plot+0.1*z_rng_plot],
                     i=[0, 0], j=[1, 2], k=[2, 3],
-                    opacity=0.3,
-                    color='red',
-                    name=f'Cut after P{p_plot_data.get("portion_num")}',
-                    showlegend=(True)
+                    opacity=0.3, color='red', name=f'Cut after P{p_plot_data.get("portion_num")}'
                 ))
 
     fig.update_layout(
         title=title,
-        scene=dict(
-            xaxis_title='Width (X,mm)',
-            yaxis_title='Length (Y,mm)',
-            zaxis_title='Height (Z,mm)',
-            aspectmode='data'
-        ),
+        scene=dict(xaxis_title='Width (X,mm)', yaxis_title='Length (Y,mm)', zaxis_title='Height (Z,mm)', aspectmode='data'),
         margin=dict(l=0, r=0, b=0, t=40),
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=0.01
-        )
+        showlegend=False
     )
     if camera_override:
         fig.update_layout(scene_camera=camera_override)
+        
+    return fig
+
+
+def plot_area_profile(volume_profile, sorted_y_starts, slice_increment_mm, calc_start_y=None, calc_end_y=None, y_offset_for_plot=0.0):
+    if not volume_profile or len(sorted_y_starts) == 0:
+        return go.Figure(layout=dict(title="Area Profile (No Data)", height=300))
+
+    y_values_plot = sorted_y_starts + y_offset_for_plot
+    area_values_plot = [(volume_profile.get(y_val_calc, 0) / slice_increment_mm if slice_increment_mm > FLOAT_EPSILON else 0)
+                        for y_val_calc in sorted_y_starts]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=y_values_plot, y=area_values_plot, mode='lines',
+                  name='Est. Area', line=dict(shape='spline', smoothing=0.5)))
+
+    plot_min_y_boundary = y_values_plot[0] if len(y_values_plot) > 0 else (
+        calc_start_y if calc_start_y is not None else 0)
+    plot_max_y_boundary = (y_values_plot[-1] + slice_increment_mm) if len(
+        y_values_plot) > 0 else (calc_end_y if calc_end_y is not None else 0)
+
+    if calc_start_y is not None and calc_start_y > (sorted_y_starts[0] + y_offset_for_plot if len(sorted_y_starts) > 0 else -np.inf):
+        fig.add_vrect(x0=plot_min_y_boundary, x1=calc_start_y, fillcolor="grey",
+                      opacity=0.15, layer="below", line_width=0, name="Start Trim")
+    if calc_end_y is not None and calc_end_y < ((sorted_y_starts[-1] + slice_increment_mm) + y_offset_for_plot if len(sorted_y_starts) > 0 else np.inf):
+        fig.add_vrect(x0=calc_end_y, x1=plot_max_y_boundary, fillcolor="grey",
+                      opacity=0.15, layer="below", line_width=0, name="End Trim")
+
+    fig.update_layout(
+        title="Area Profile (Shaded=Trimmed Sections, Y-axis uses original coords)",
+        xaxis_title=f"Length (Y, mm - Original Coords)",
+        yaxis_title="Est. Cross-Sectional Area (mm²)",
+        margin=dict(l=20, r=20, t=40, b=20),
+        height=300
+    )
     return fig
 
 
@@ -1283,9 +1315,6 @@ def calculate_with_waste_redistribution(
 
 def analyze_y_resolution(points_df, precision=4):
     """
-    Optimized version: Analyzes Y-axis resolution by converting float coordinates
-    to scaled integers, which is faster for unique/sorting operations.
-
     Args:
         points_df (pd.DataFrame): The input point cloud.
         precision (int): The number of decimal places to consider for resolution.
@@ -1628,10 +1657,6 @@ def launch_o3d_viewer_with_wedge_cuts(points_df, portions_data):
 
 
 def plot_3d_wheel_with_cuts(points_df, portions_data, highlighted_portion_num=None):
-    """
-    Creates a Plotly 3D scatter plot of the cheese wheel with lines indicating the cuts.
-    Includes logic to highlight a specific wedge in a different color.
-    """
     if points_df is None or points_df.empty:
         return go.Figure(layout={"title": "No Point Cloud Data"})
 
@@ -1741,10 +1766,6 @@ def plot_3d_wheel_with_cuts(points_df, portions_data, highlighted_portion_num=No
 
 
 def plot_angular_weight_profile(params, total_usable_weight):
-    """
-    Creates a polar bar chart to show how weight is distributed around the wheel.
-    This helps visualize why some wedges are larger or smaller in angle.
-    """
     num_slices = params.get('num_angular_slices', 360)
     angles_deg = np.linspace(0, 360, num_slices, endpoint=False)
 
