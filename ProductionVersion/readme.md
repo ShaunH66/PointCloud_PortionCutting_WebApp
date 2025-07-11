@@ -8,7 +8,7 @@ This repository contains two-part automation for calculating optimal cutting por
 
 Dashboard preview
 
-![image](https://github.com/user-attachments/assets/78d4e30f-07b5-4294-8e9b-61d8e271eb98)
+<img width="1918" height="1074" alt="image" src="https://github.com/user-attachments/assets/91f28e8d-7203-4d23-809f-d02253f99a16" />
 
 Console log preview
 
